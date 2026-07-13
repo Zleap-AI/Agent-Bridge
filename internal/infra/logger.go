@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // logger.go
 // 日志初始化与配置，基于 log/slog
@@ -19,7 +19,7 @@ import (
 
 const (
 	// LogDir 日志文件存放目录
-	LogDir = ".zleap/logs"
+	LogDir = ".agent-bridge/logs"
 )
 
 // InitLogger 初始化 slog 日志器
@@ -81,7 +81,7 @@ func getLogLevel(debug bool) slog.Leveler {
 func getLogFilePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(os.TempDir(), "zleap-bridge.log")
+		return filepath.Join(os.TempDir(), "Agent-Bridge.log")
 	}
 	return filepath.Join(home, LogDir,
 		time.Now().Format("2006-01-02")+".log")

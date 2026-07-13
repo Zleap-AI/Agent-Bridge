@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // errors.go
 // Agent 相关的错误类型与恢复策略定义
@@ -104,10 +104,10 @@ func IsCodex503(text string) bool {
 
 // RetryConfig 重试配置
 type RetryConfig struct {
-	MaxRetries      int
-	BaseBackoff     time.Duration
-	MaxBackoff      time.Duration
-	RetryableCheck  func(error) bool // 判断错误是否可重试
+	MaxRetries     int
+	BaseBackoff    time.Duration
+	MaxBackoff     time.Duration
+	RetryableCheck func(error) bool // 判断错误是否可重试
 }
 
 // DefaultRetryConfig 默认重试配置

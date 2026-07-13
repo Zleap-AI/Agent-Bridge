@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // config.go
 // 配置文件管理，使用 JSON 格式
@@ -16,8 +16,8 @@ import (
 )
 
 const (
-	// DefaultConfigDir 默认配置目录 (~/.zleap/tunnel)
-	DefaultConfigDir = ".zleap/tunnel"
+	// DefaultConfigDir 默认配置目录 (~/.agent-bridge/tunnel)
+	DefaultConfigDir = ".agent-bridge/tunnel"
 	// DefaultConfigFile 默认配置文件名
 	DefaultConfigFile = "config.json"
 )
@@ -29,8 +29,8 @@ type Config struct {
 	Token    string `json:"token,omitempty"`
 
 	// 连接
-	ServerURL   string `json:"server_url,omitempty"`
-	AdminPort   int    `json:"admin_port,omitempty"`
+	ServerURL string `json:"server_url,omitempty"`
+	AdminPort int    `json:"admin_port,omitempty"`
 
 	// Agent 配置路径
 	ClaudeSettingsFile string `json:"claude_settings_file,omitempty"`
@@ -65,10 +65,10 @@ func LoadConfig() (*Config, error) {
 	}
 
 	// 2. 环境变量覆盖（可选）
-	if v := os.Getenv("ZLEAP_SERVER_URL"); v != "" {
+	if v := os.Getenv("AGENT_BRIDGE_SERVER_URL"); v != "" {
 		cfg.ServerURL = v
 	}
-	if v := os.Getenv("ZLEAP_DEBUG"); v == "1" || v == "true" {
+	if v := os.Getenv("AGENT_BRIDGE_DEBUG"); v == "1" || v == "true" {
 		cfg.Debug = true
 	}
 

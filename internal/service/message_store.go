@@ -1,11 +1,11 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // message_store.go
 // 会话消息存储器 — 管理 Agent 会话消息的文件持久化
 // 与 Python 版 registry.py 的 _save_session_messages / _load_session_messages 兼容
 // 存储格式：
-//   - 消息数据：~/.zleap/agents/{agent_id}/messages/{session_id}.json
+//   - 消息数据：~/.agent-bridge/agents/{agent_id}/messages/{session_id}.json
 //   - 会话元数据：由 session.go 的 persistSession 写入 sessions/ 目录
 //
 // Lzm 2026-07-10
@@ -42,7 +42,7 @@ type SessionSummary struct {
 // 负责 Agent 会话消息的持久化读写
 // Lzm 2026-07-10
 type MessageStore struct {
-	// storeDir 持久化根目录 (~/.zleap/agents/)
+	// storeDir 持久化根目录 (~/.agent-bridge/agents/)
 	storeDir string
 }
 
@@ -56,7 +56,7 @@ func NewMessageStore(storeDir string) *MessageStore {
 // DefaultMessageStore 使用默认路径创建消息存储器
 func DefaultMessageStore() *MessageStore {
 	home, _ := os.UserHomeDir()
-	storeDir := filepath.Join(home, ".zleap", "agents")
+	storeDir := filepath.Join(home, ".agent-bridge", "agents")
 	return NewMessageStore(storeDir)
 }
 

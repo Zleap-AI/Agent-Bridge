@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <!--
   -*- coding: utf-8 -*-
-  test_saas.html
-  SaaS 模拟测试界面 — 通过 Bridge Admin WebSocket 发送指令到 Agent
+  test_remote.html
+  远程连接模拟界面 — 通过 Bridge Admin WebSocket 发送指令到 Agent
   连接至 ws://localhost:9202/ws/admin (Bridge Admin WebSocket)
 
   功能：
@@ -12,15 +12,15 @@
   - 发送 prompt，实时流式显示对话
   - 对话区 + 日志区双 Tab
 
-  通讯规则（SaaS 层协议）：
-  - bridge/list → 获取 Bridge/Agent 列表（SaaS 本地处理）
-  - invoke → 包装 Agent ACP 操作（SaaS 透传 Bridge）
+  通讯规则（远程连接协议）：
+  - bridge/list → 获取 Bridge/Agent 列表
+  - invoke → 包装 Agent ACP 操作并透传至 Bridge
     - agent_id: 目标 Agent
     - method: session/new, session/load, session/prompt
     - params: ACP 参数
-  - sessions/list → 获取会话列表（SaaS 透传 Bridge）
-  - sessions/messages → 获取会话历史（SaaS 透传 Bridge）
-  - ping → 保活（SaaS 本地处理）
+  - sessions/list → 获取会话列表
+  - sessions/messages → 获取会话历史
+  - ping → 保活
 
   Lzm 2026-07-10
 -->
@@ -28,7 +28,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SaaS 模拟测试 - zleap-bridge</title>
+  <title>远程连接模拟 - Agent-Bridge</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Segoe UI', -apple-system, sans-serif; background: #1a1b26; color: #cfcfe2; height: 100vh; display: flex; flex-direction: column; }
@@ -102,7 +102,7 @@
 </head>
 <body>
   <div class="header">
-    <h1>🛰️ SaaS 模拟测试</h1>
+    <h1>🛰️ 远程连接模拟</h1>
     <span id="connBadge" class="badge disconnected">未连接</span>
     <span style="color:#565f89;font-size:13px;margin-left:auto;">Bridge: ws://localhost:9202/ws/admin</span>
   </div>
@@ -111,7 +111,7 @@
     <!-- 左面板：控制区 -->
     <div class="panel panel-left">
       <div class="section">
-        <div class="section-title">SaaS 连接</div>
+        <div class="section-title">远程连接</div>
         <div class="status-row">
           <span class="label">状态</span>
           <span id="statusText" style="color:#565f89;">等待连接...</span>
@@ -262,7 +262,7 @@
         connected = state;
         connBadge.textContent = state ? '已连接' : '未连接';
         connBadge.className = 'badge ' + (state ? 'connected' : 'disconnected');
-        statusText.textContent = state ? '已连接至 SaaS' : '等待连接...';
+        statusText.textContent = state ? '已连接至 Bridge' : '等待连接...';
         statusText.style.color = state ? '#73daca' : '#565f89';
         $('btnConnect').textContent = state ? '断开' : '连接';
         // 启用/禁用按钮
@@ -491,7 +491,7 @@
             // bridge/list 欢迎消息 → 更新 Bridge/Agent UI
             if (data.method === 'bridge/list' && data.params) {
               updateBridgeUI(data.params);
-              addLog('SaaS 欢迎: bridge/list', 'info');
+              addLog('收到 Bridge 列表: bridge/list', 'info');
               return;
             }
 
@@ -723,7 +723,7 @@
         }
       });
 
-      // --- 发送消息（SaaS 协议）---
+      // --- 发送远程连接协议消息 ---
       function sendMessage(msg) {
         if (!connected || !ws) {
           addLog('未连接，无法发送', 'error');
@@ -740,14 +740,14 @@
         }
       }
 
-      // --- SaaS 操作 ---
+      // --- 远程操作 ---
       function doNewSession() {
         if (!connected) { addLog('请先连接', 'error'); return; }
         var agentId = agentSelect.value;
         if (!agentId) { addLog('请选择 Agent', 'error'); return; }
 
         sendMessage({
-          id: 'invoke_session_new_' + Date.now() + '_bridge',
+          id: 'invoke_session_new_' + Date.now(),
           method: 'invoke',
           params: { agent_id: agentId, method: 'session/new', params: {} }
         });
@@ -773,9 +773,9 @@
         }
 
         sendMessage({
-          id: 'invoke_prompt_' + Date.now() + '_stream_bridge',
+          id: 'invoke_prompt_' + Date.now(),
           method: 'invoke',
-          params: { agent_id: agentId, method: 'session/prompt', params: params }
+          params: { agent_id: agentId, method: 'session/prompt', params: params, stream: true }
         });
       }
 
@@ -804,7 +804,7 @@
 
         addLog('回退: invoke session/load agent=' + agentId + ', session=' + sid.substring(0, 24) + '...', 'info');
         sendMessage({
-          id: 'invoke_load_' + Date.now() + '_bridge',
+          id: 'invoke_load_' + Date.now(),
           method: 'invoke',
           params: { agent_id: agentId, method: 'session/load', params: { sessionId: sid } }
         });
@@ -858,7 +858,7 @@
       });
 
       // 初始日志
-      addLog('SaaS 测试界面已加载，自动连接...', 'info');
+      addLog('远程连接模拟界面已加载，自动连接...', 'info');
       addLog('提示: Ctrl+Enter 快速发送 Prompt', 'info');
 
       // 自动连接

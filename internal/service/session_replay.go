@@ -1,12 +1,12 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // session_replay.go
 // 会话回放器 — 利用 ACP session/load 协议重放历史消息
 // 借鉴 OpenViking 的 SessionReplayer 机制：
 //   - 通过 ACP session/load 从 Agent 进程获取历史消息
 //   - 消息持久化到 MessageStore（文件存储）
-//   - 用于 SaaS 查询历史会话的完整对话记录
+//   - 用于远程服务查询历史会话的完整对话记录
 //
 // Lzm 2026-07-10
 
@@ -20,9 +20,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zleap/bridge/internal"
-	"github.com/zleap/bridge/internal/agent"
-	"github.com/zleap/bridge/internal/protocol"
+	"github.com/Zleap-AI/Agent-Bridge/internal"
+	"github.com/Zleap-AI/Agent-Bridge/internal/agent"
+	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
 )
 
 // SessionLoadReplayer 会话回放器

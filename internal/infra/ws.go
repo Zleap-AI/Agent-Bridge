@@ -1,9 +1,9 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // ws.go
 // WebSocket 客户端与服务端封装（基于 gorilla/websocket）
-// 用于 SaaS 与 Bridge 之间的长连接通信
+// 用于远程服务与 Bridge 之间的长连接通信
 //
 // Lzm 2026-07-09
 
@@ -44,10 +44,10 @@ type WSClient struct {
 
 // WSClientConfig WebSocket 客户端配置
 type WSClientConfig struct {
-	URL        string
-	Header     http.Header
-	OnMessage  func(data []byte)
-	OnError    func(err error)
+	URL       string
+	Header    http.Header
+	OnMessage func(data []byte)
+	OnError   func(err error)
 }
 
 // NewWSClient 创建并连接 WebSocket 客户端

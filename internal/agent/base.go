@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // base.go
 // 共享的 Agent 基础实现 — 进程管理、ACP 读写、状态跟踪
@@ -19,9 +19,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zleap/bridge/internal"
-	"github.com/zleap/bridge/internal/infra"
-	"github.com/zleap/bridge/internal/protocol"
+	"github.com/Zleap-AI/Agent-Bridge/internal"
+	"github.com/Zleap-AI/Agent-Bridge/internal/infra"
+	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
 )
 
 // baseAgent 封装 Agent 的公共逻辑

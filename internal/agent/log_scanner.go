@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // log_scanner.go
 // LogScanner — 日志扫描器，借鉴 OpenViking 的 LogSource 适配器模式
@@ -23,12 +23,12 @@ import (
 // SessionRef 会话引用 — 对应 OpenViking 的 SessionRef
 // Lzm 2026-07-10
 type SessionRef struct {
-	Harness    string            `json:"harness"`     // Agent 类型名（如 "kimi", "codex"）
-	NativeID   string            `json:"native_id"`   // Agent 自己的会话 ID
-	Locator    string            `json:"locator"`     // 文件路径
-	Title      string            `json:"title"`       // 会话标题
-	StartedAt  int64             `json:"started_at"`  // 开始时间戳
-	Meta       map[string]string `json:"meta,omitempty"` // 额外信息（模型名、cwd 等）
+	Harness   string            `json:"harness"`        // Agent 类型名（如 "kimi", "codex"）
+	NativeID  string            `json:"native_id"`      // Agent 自己的会话 ID
+	Locator   string            `json:"locator"`        // 文件路径
+	Title     string            `json:"title"`          // 会话标题
+	StartedAt int64             `json:"started_at"`     // 开始时间戳
+	Meta      map[string]string `json:"meta,omitempty"` // 额外信息（模型名、cwd 等）
 }
 
 // LogScanner 日志扫描器接口 — 对应 OpenViking 的 LogSource 抽象基类
@@ -128,9 +128,9 @@ func ScannerFromAgentID(agentID string) LogScanner {
 		return nil
 	}
 	return &dirScanner{
-		name:  agentID,
-		dirs:  dirs,
-		ext:   ".jsonl",
+		name: agentID,
+		dirs: dirs,
+		ext:  ".jsonl",
 	}
 }
 
@@ -159,10 +159,10 @@ func (d *dirScanner) DiscoverSessions() ([]SessionRef, error) {
 			path := filepath.Join(dir, e.Name())
 			info, _ := os.Stat(path)
 			sessions = append(sessions, SessionRef{
-				Harness:    d.name,
-				NativeID:   strings.TrimSuffix(e.Name(), d.ext),
-				Locator:    path,
-				StartedAt:  info.ModTime().Unix(),
+				Harness:   d.name,
+				NativeID:  strings.TrimSuffix(e.Name(), d.ext),
+				Locator:   path,
+				StartedAt: info.ModTime().Unix(),
 			})
 		}
 	}

@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // kimi.go
 // Kimi Agent 实现
@@ -19,8 +19,8 @@ import (
 	"os/user"
 	"path/filepath"
 
-	"github.com/zleap/bridge/internal"
-	"github.com/zleap/bridge/internal/protocol"
+	"github.com/Zleap-AI/Agent-Bridge/internal"
+	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
 )
 
 // KimiAgent Kimi Agent 实现

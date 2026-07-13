@@ -1,8 +1,8 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // acp.go
-// ACP (Agent Communication Protocol) 消息类型与读写器
+// ACP (Agent Client Protocol) 消息类型与读写器
 // ACP 基于 JSON-RPC 2.0，通过子进程 stdin/stdout 通信
 //
 // Lzm 2026-07-09
@@ -16,16 +16,16 @@ import (
 	"io"
 	"strings"
 
-	"github.com/zleap/bridge/internal"
+	"github.com/Zleap-AI/Agent-Bridge/internal"
 )
 
 // ACPMessage JSON-RPC 2.0 消息结构（ACP 协议用）
 type ACPMessage struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      string          `json:"id,omitempty"`
-	Method  string          `json:"method,omitempty"`
-	Params  json.RawMessage `json:"params,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
+	JSONRPC string             `json:"jsonrpc"`
+	ID      string             `json:"id,omitempty"`
+	Method  string             `json:"method,omitempty"`
+	Params  json.RawMessage    `json:"params,omitempty"`
+	Result  json.RawMessage    `json:"result,omitempty"`
 	Error   *internal.ACPError `json:"error,omitempty"`
 }
 
@@ -103,7 +103,7 @@ func NewInitializeRequest(id string) *ACPMessage {
 		JSONRPC: "2.0",
 		ID:      id,
 		Method:  "initialize",
-		Params:  json.RawMessage(`{"protocolVersion":2024,"capabilities":{}}`),
+		Params:  json.RawMessage(`{"protocolVersion":1,"clientCapabilities":{}}`),
 	}
 }
 

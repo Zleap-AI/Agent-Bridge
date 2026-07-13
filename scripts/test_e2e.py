@@ -2,9 +2,9 @@
 # Python 3.12+
 #
 # test_e2e.py
-# zleap-bridge 端到端综合测试
+# Agent-Bridge 端到端综合测试
 # 测试：Bridge Admin API、Admin WebSocket 链路、Agent 调用
-# 所有测试均连接 Bridge Admin（:9202），无需独立 SaaS 模拟器
+# 所有测试均连接 Bridge Admin（:9202），无需独立远程服务模拟器
 #
 # Lzm 2026-07-13
 
@@ -105,7 +105,7 @@ async def ws_test():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  Zleap Bridge - 端到端综合测试")
+    print("  Agent-Bridge - 端到端综合测试")
     print("=" * 60)
     print()
 
