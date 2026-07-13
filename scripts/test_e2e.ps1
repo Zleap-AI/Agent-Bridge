@@ -3,16 +3,16 @@
 #
 # test_e2e.ps1
 # zleap-bridge 端到端综合测试脚本
-# 测试：Bridge Admin API、SaaS WebSocket 链路、Agent 调用
+# 测试：Bridge Admin API、Admin WebSocket 链路
+# 连接 Bridge Admin（:9202），无需独立 SaaS 模拟器
 #
-# Lzm 2026-07-09
+# Lzm 2026-07-13
 
 $ErrorActionPreference = "Stop"
 
 # --- 配置 ---
 $BRIDGE_ADMIN = "http://localhost:9202"
-$SAAS_ADMIN_WS = "ws://localhost:9201/ws/admin"
-$SAAS_STATUS  = "http://localhost:9201/status"
+$ADMIN_WS = "ws://localhost:9202/ws/admin"
 $ALL_TESTS = 0
 $PASSED = 0
 $FAILED = 0
@@ -46,36 +46,34 @@ Write-Host "[集合 1] Bridge Admin API" -ForegroundColor Yellow
 Test-Step "Health 检查" {
     $h = Invoke-RestMethod -Uri "$BRIDGE_ADMIN/health" -Method Get
     if ($h.status -ne "ok") { throw "status=$($h.status), 期望 ok" }
-    if ($h.version -ne "0.2.0") { throw "version=$($h.version), 期望 0.2.0" }
-    Write-Host "    agents: $($h.agents | Out-String) " -NoNewline
+    if ($h.version -ne "0.3.0") { throw "version=$($h.version), 期望 0.3.0" }
+    $ids = $h.agents.PSObject.Properties.Name -join ', '
+    Write-Host "    agents: $ids"
 }
 
 Test-Step "Agent 列表" {
     $agents = Invoke-RestMethod -Uri "$BRIDGE_ADMIN/agents" -Method Get
     if ($agents.Count -lt 1) { throw "Agent 数量=${agents.Count}" }
     $ids = $agents | ForEach-Object { $_.agent_id }
-    Write-Host "    检测到: $($ids -join ', ')"
+    Write-Host "    检测到 $($agents.Count) 个 Agent: $($ids -join ', ')"
 }
 
-# ====== 测试集 2: SaaS 状态 ======
-Write-Host "`n[集合 2] SaaS 模拟器状态" -ForegroundColor Yellow
+# ====== 测试集 2: Admin WebSocket 测试 ======
+Write-Host "`n[集合 2] Admin WebSocket 链路测试" -ForegroundColor Yellow
 
-Test-Step "SaaS 配对检查" {
-    $s = Invoke-RestMethod -Uri "$SAAS_STATUS" -Method Get
-    if ($s.paired_bridges -lt 1) { throw "未配对的bridge" }
-    if ($s.connected_ws -lt 1) { throw "无已连接的bridge" }
-    Write-Host "    bridge配对: $($s.paired_bridges), 已连接: $($s.connected_ws)"
-}
-
-# ====== 测试集 3: WebSocket 测试 (SaaS 管理端) ======
-Write-Host "`n[集合 3] SaaS WebSocket 链路测试" -ForegroundColor Yellow
-
-# 使用 .NET WebSocket 客户端
 Test-Step "WebSocket 连接 + ping" {
     $ws = New-Object System.Net.WebSockets.ClientWebSocket
     $cts = New-Object System.Threading.CancellationTokenSource(10000)
-    $ws.ConnectAsync([System.Uri]$SAAS_ADMIN_WS, $cts.Token).Wait()
+    $ws.ConnectAsync([System.Uri]$ADMIN_WS, $cts.Token).Wait()
     if ($ws.State -ne "Open") { throw "WebSocket 未打开: $($ws.State)" }
+
+    # 读取欢迎消息 (bridge/list)
+    $buf = New-Object byte[] 4096
+    $res = $ws.ReceiveAsync((New-Object System.ArraySegment[byte] -ArgumentList @(,$buf)), $cts.Token)
+    $res.Wait()
+    $welcome = [System.Text.Encoding]::UTF8.GetString($buf, 0, $res.Result.Count)
+    if ($welcome -notmatch 'bridge/list') { throw "欢迎消息异常: $($welcome.Substring(0, 80))" }
+    Write-Host "    bridge/list 欢迎 OK"
 
     # 发送 ping
     $ping = '{"id":"test_ping","method":"ping"}'

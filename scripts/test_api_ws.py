@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""WebSocket API 测试 - 验证增强的 sessions/messages + env/check 功能
+"""WebSocket API 测试 - 验证 sessions/messages 等功能
+脚本统一管理在 scripts/ 目录下
 Lzm 2026-07-10"""
 
 import json

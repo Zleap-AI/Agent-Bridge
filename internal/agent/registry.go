@@ -141,6 +141,14 @@ func (r *AgentRegistry) Discover() error {
 		// 可尝试通过 npm/pip 自动安装
 	}
 
+	// 4. 检查 Hermes 配置目录（判断是否安装过 Hermes Agent）
+	hermesConfig := filepath.Join(home, ".hermes", ".env")
+	if _, err := os.Stat(hermesConfig); err == nil {
+		slog.Info("检测到 Hermes 配置文件",
+			"path", hermesConfig,
+		)
+	}
+
 	// 4. 检查 Claude Code 配置目录
 	claudeDir := filepath.Join(home, ".claude")
 	if claudeEntries, err := os.ReadDir(claudeDir); err == nil && len(claudeEntries) > 0 {
@@ -217,6 +225,15 @@ func (r *AgentRegistry) Discover() error {
 			args:        codexArgs,
 			newAgent: func(meta AgentMeta) Agent {
 				return NewCodexAgent(meta)
+			},
+		},
+		{
+			id:          "hermes",
+			displayName: "Hermes Agent",
+			cmd:         "hermes",
+			args:        []string{"acp"},
+			newAgent: func(meta AgentMeta) Agent {
+				return NewHermesAgent(meta)
 			},
 		},
 		{

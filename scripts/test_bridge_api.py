@@ -3,6 +3,7 @@
 #
 # test_bridge_api.py
 # zleap-bridge WebSocket API 完整功能测试
+# 脚本统一管理在 scripts/ 目录下
 # 测试: health → agents → session/new → sessions/list → session/prompt
 #
 # Lzm 2026-07-10

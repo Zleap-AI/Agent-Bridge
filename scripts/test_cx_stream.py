@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """测试 Codex 流式对话（简化版）
+脚本统一管理在 scripts/ 目录下
 Lzm 2026-07-10"""
 
 import json

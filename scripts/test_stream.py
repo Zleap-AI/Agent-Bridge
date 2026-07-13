@@ -3,6 +3,7 @@
 #
 # test_stream.py
 # 测试流式 Prompt 发送（带 _stream 后缀触发流式模式）
+# 脚本统一管理在 scripts/ 目录下
 #
 # Lzm 2026-07-10
 
