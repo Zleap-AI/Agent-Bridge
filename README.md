@@ -14,7 +14,7 @@
 
 1. [项目概述](#1-项目概述)
 2. [整体架构](#2-整体架构)
-3. [SaaS 通讯规则（ANP 协议）](#3-saas-通讯规则anp-协议)
+3. [SaaS 通讯规则](#3-saas-通讯规则)
 4. [本地 Agent 检索规则](#4-本地-agent-检索规则)
 5. [对接规则](#5-对接规则)
 6. [核心数据流](#6-核心数据流)
@@ -48,7 +48,7 @@ zleap-bridge 是一个本地 AI Agent 桥接器，核心使命是：
 │                          SaaS 平台（云端）                             │
 │  负责：用户管理、配对码生成、请求分发、结果聚合、前端 WebSocket 推送    │
 └──────────────────────────┬───────────────────────────────────────────┘
-                           │ ANP 协议 (Agent Network Protocol)
+                           │ WebSocket JSON-RPC
                            │ JSON-RPC 2.0 over WebSocket
                            ▼
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -57,7 +57,7 @@ zleap-bridge 是一个本地 AI Agent 桥接器，核心使命是：
 │  ┌─────────────────┐    ┌─────────────────────┐    ┌──────────────┐  │
 │  │ WSClient        │    │ TunnelService       │    │ 自动重连      │  │
 │  │ (gorilla/ws)    │───▶│ 协议桥接核心         │───▶│ 5s间隔       │  │
-│  │ 发送/接收JSON   │    │ ANP↔ACP 转换        │    │ 无限重试     │  │
+│  │ 发送/接收JSON   │    │ 协议转换（WebSocket↔ACP）        │    │ 无限重试     │  │
 │  └─────────────────┘    └──────────┬──────────┘    └──────────────┘  │
 └────────────────────────────────────┼──────────────────────────────────┘
                                      │ 路由分发
@@ -117,13 +117,13 @@ zleap-bridge 是一个本地 AI Agent 桥接器，核心使命是：
 
 ### 2.2 核心设计理念
 
-- **两协议桥接**：本地 Agent 使用 ACP（JSON-RPC 2.0 over stdin/stdout），云端使用 ANP（JSON-RPC 2.0 over WebSocket），zleap-bridge 作为两者之间的协议转换层。
+- **两协议桥接**：本地 Agent 使用 ACP（JSON-RPC 2.0 over stdin/stdout），云端通过 WebSocket 使用 JSON-RPC 2.0，zleap-bridge 作为两者之间的协议转换层。
 - **无侵入式接入**：不修改本地 Agent 的任何代码，Agent 本身不知道 bridge 的存在。
 - **即插即用**：启动 bridge 后自动扫描 PATH 目录发现已安装的 Agent，无需手动配置。
 
 ---
 
-## 3. SaaS 通讯规则（ANP 协议）
+## 3. SaaS 通讯规则
 
 ### 3.1 协议基础
 
@@ -631,15 +631,15 @@ type Agent interface {
 步骤 3：远程调用
   SaaS 收到用户请求（如"帮我写一个 Python 爬虫"）
   → SaaS 选择目标 Agent（如 claude-code）
-  → 构造 ANP invoke 消息，通过 WebSocket 下发给 Bridge
+  → 构造 invoke 消息（JSON-RPC），通过 WebSocket 下发给 Bridge
   → Bridge 确认 Agent 进程是否已启动（未启动则自动拉起）
   → Bridge 通过 ACP 协议将请求转发给 Agent 子进程
   → Agent 开始处理（思考 + 生成回复）
   → Agent 的流式输出通过 ACP session/update 返回给 Bridge
-  → Bridge 转换为 ANP session/update，实时推送给 SaaS
+  → Bridge 转换为 session/update，实时推送给 SaaS
   → SaaS 推送给前端用户（实现打字机效果）
   → Agent 处理完成，返回最终结果
-  → Bridge 以 ANP response 通知 SaaS 调用完成
+  → Bridge 以 response 通知 SaaS 调用完成
 ```
 
 ### 6.2 消息流时序图
@@ -647,7 +647,7 @@ type Agent interface {
 ```
 SaaS                    Bridge                    Agent(如 Claude)
  │                        │                          │
- │── ANP invoke ────────→│                          │
+ │── invoke ────────────→│                          │
  │   {id, agent_id,      │                          │
  │    method, params}    │                          │
  │                        │── ACP session/prompt ──→│
@@ -656,16 +656,16 @@ SaaS                    Bridge                    Agent(如 Claude)
  │                        │    prompt: [...]}}      │
  │                        │                          │
  │                        │← ACP session/update ─────│
- │   ← ANP session/update │   (thought_chunk)        │
+ │   ← session/update    │   (thought_chunk)        │
  │   (实时推送)            │                          │
  │                        │                          │
  │                        │← ACP session/update ─────│
- │   ← ANP session/update │   (message_chunk)        │
+ │   ← session/update    │   (message_chunk)        │
  │   (实时推送)            │                          │
  │                        │         ...              │
  │                        │                          │
  │                        │← ACP response ───────────│
- │   ← ANP response      │   {jsonrpc, id, result}  │
+ │   ← response          │   {jsonrpc, id, result}  │
  │   (调用完成)           │                          │
 ```
 
@@ -852,7 +852,7 @@ zleap-bridge.exe
 
 #### SaaS 测试界面（`/test_saas.html`）
 
-用于模拟 SaaS 平台发送 ANP 消息，测试 Bridge 到 Agent 的完整链路。
+用于模拟 SaaS 平台发送 JSON-RPC 消息，测试 Bridge 到 Agent 的完整链路。
 
 **操作步骤：**
 
@@ -873,9 +873,9 @@ zleap-bridge.exe
    - 点击加载，Bridge 通过 ACP `session/load` 从 Agent 恢复会话
    - 加载成功后可通过 "查询消息" 查看历史消息
 
-**对应 ANP 方法说明：**
+**对应协议方法说明：**
 
-| 测试页面操作 | ANP Method | ACP 对应 | 说明 |
+| 测试页面操作 | 协议方法 | ACP 对应 | 说明 |
 |-------------|-----------|---------|------|
 | 创建会话 → | `invoke` + `session/new` | `session/new` | 在 Agent 上创建新会话 |
 | 发送提示词 → | `invoke` + `session/prompt` | `session/prompt` | 向 Agent 发送用户输入 |
