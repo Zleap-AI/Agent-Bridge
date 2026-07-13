@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<!--
+  -*- coding: utf-8 -*-
+  test_acp.html
+  ACP 协议测试界面 — 直接与 Bridge 通信，测试本地 Agent 的 ACP 能力
+  连接至 ws://localhost:9202/ws/admin (Bridge Admin WebSocket)
+
+  Lzm 2026-07-09
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ACP 协议测试 - zleap-bridge</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', -apple-system, sans-serif; background: #1a1b26; color: #cfcfe2; height: 100vh; display: flex; flex-direction: column; }
+    .header { background: #24253a; padding: 12px 24px; border-bottom: 1px solid #363954; display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
+    .header h1 { font-size: 18px; font-weight: 600; color: #7aa2f7; }
+    .header .badge { font-size: 12px; padding: 2px 10px; border-radius: 10px; }
+    .badge.connected { background: #1f3d2e; color: #73daca; border: 1px solid #3b6b54; }
+    .badge.disconnected { background: #3d1f1f; color: #f7768e; border: 1px solid #6b3b3b; }
+    .main { display: flex; flex: 1; overflow: hidden; }
+    .panel { display: flex; flex-direction: column; }
+    .panel-left { width: 340px; min-width: 340px; border-right: 1px solid #363954; }
+    .panel-right { flex: 1; }
+    .section { padding: 12px 16px; border-bottom: 1px solid #363954; }
+    .section-title { font-size: 12px; font-weight: 600; color: #565f89; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+    label { display: block; font-size: 13px; color: #a9b1d6; margin-bottom: 4px; }
+    select, input[type="text"], button, textarea { width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid #363954; background: #1a1b26; color: #cfcfe2; font-size: 13px; margin-bottom: 8px; }
+    select:focus, input:focus, textarea:focus { outline: none; border-color: #7aa2f7; }
+    button { cursor: pointer; background: #2f3347; border-color: #363954; font-weight: 500; transition: all .15s; }
+    button:hover { background: #3b405d; border-color: #7aa2f7; }
+    button.primary { background: #3b5b8c; border-color: #7aa2f7; }
+    button.primary:hover { background: #4a6fa5; }
+    button.danger { background: #5c2d2d; border-color: #b85656; }
+    button.danger:hover { background: #6e3a3a; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-row { display: flex; gap: 8px; }
+    .btn-row button { flex: 1; }
+    textarea { font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 12px; resize: vertical; min-height: 60px; }
+    .log-container { flex: 1; overflow-y: auto; padding: 8px 16px; background: #13141f; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 12px; }
+    .log-entry { padding: 4px 0; border-bottom: 1px solid #1a1b26; line-height: 1.5; word-break: break-all; }
+    .log-entry .time { color: #565f89; margin-right: 8px; }
+    .log-entry .dir { font-weight: 600; margin-right: 6px; }
+    .log-entry .dir.sent { color: #73daca; }
+    .log-entry .dir.recv { color: #7dcfff; }
+    .log-entry .dir.error { color: #f7768e; }
+    .log-entry .dir.info { color: #e0af68; }
+    .status-row { display: flex; gap: 8px; align-items: center; }
+    .status-row > * { margin-bottom: 0; }
+    .status-row .label { color: #565f89; font-size: 12px; min-width: 50px; }
+    .log-actions { display: flex; gap: 8px; padding: 8px 16px; border-top: 1px solid #363954; background: #24253a; flex-shrink: 0; }
+    .log-actions button { margin-bottom: 0; width: auto; padding: 4px 12px; font-size: 12px; }
+
+    /* 对话区域样式 */
+    .conv-container { flex: 1; overflow-y: auto; padding: 12px 16px; background: #13141f; display: flex; flex-direction: column; gap: 12px; }
+    .conv-msg { border: 1px solid #363954; border-radius: 8px; background: #1a1b26; overflow: hidden; }
+    .conv-msg-header { padding: 6px 12px; font-size: 11px; font-weight: 600; color: #565f89; background: #24253a; border-bottom: 1px solid #363954; text-transform: uppercase; letter-spacing: 0.5px; }
+    .conv-msg-body { padding: 10px 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+    .conv-msg-body.empty { color: #565f89; font-style: italic; }
+    .conv-thought { border-left: 3px solid #e0af68; margin: 4px 8px 8px 8px; border-radius: 4px; background: #1e1f2e; }
+    .conv-thought summary { padding: 6px 10px; font-size: 12px; color: #e0af68; cursor: pointer; font-weight: 500; }
+    .conv-thought-content { padding: 4px 10px 8px 10px; font-size: 12px; color: #a9b1d6; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+    .conv-response { padding: 8px 12px; font-size: 13px; color: #cfcfe2; white-space: pre-wrap; word-break: break-word; line-height: 1.6; min-height: 20px; }
+    .conv-response.streaming { color: #7dcfff; }
+    .conv-response.done { color: #73daca; }
+    .conv-response.empty { color: #565f89; font-style: italic; }
+    .conv-tool { margin: 4px 8px; padding: 6px 10px; border-radius: 4px; background: #1e1f2e; border: 1px solid #363954; font-size: 12px; }
+    .conv-tool-name { color: #7aa2f7; font-weight: 500; }
+    .conv-tool-status { font-size: 11px; color: #565f89; }
+    .conv-footer { padding: 4px 12px 8px 12px; font-size: 11px; color: #565f89; display: flex; gap: 12px; }
+
+    .tab-bar { display: flex; background: #24253a; border-bottom: 1px solid #363954; flex-shrink: 0; }
+    .tab-bar button { margin: 0; border-radius: 0; border: none; border-bottom: 2px solid transparent; background: transparent; padding: 8px 16px; font-size: 12px; color: #565f89; }
+    .tab-bar button.active { color: #7aa2f7; border-bottom-color: #7aa2f7; background: #1a1b26; }
+    .tab-bar button:hover { color: #a9b1d6; }
+    .tab-content { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+    .tab-content.active { display: flex; }
+
+    .bridge-info { background: #1a1b26; border: 1px solid #363954; border-radius: 6px; padding: 8px 12px; font-size: 12px; margin-bottom: 8px; }
+    .bridge-info .row { display: flex; justify-content: space-between; padding: 2px 0; }
+    .bridge-info .key { color: #565f89; }
+    .bridge-info .val { color: #cfcfe2; }
+
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #13141f; }
+    ::-webkit-scrollbar-thumb { background: #363954; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>🔌 ACP 协议测试</h1>
+    <span id="connBadge" class="badge disconnected">未连接</span>
+    <span style="color:#565f89;font-size:13px;margin-left:auto;">Bridge: ws://localhost:9202/ws/admin</span>
+  </div>
+
+  <div class="main">
+    <!-- 左面板：控制区 -->
+    <div class="panel panel-left">
+      <div class="section">
+        <div class="section-title">连接</div>
+        <div class="status-row">
+          <span class="label">状态</span>
+          <span id="statusText" style="color:#565f89;">等待连接...</span>
+          <button id="btnConnect" style="width:auto;margin-left:auto;padding:4px 16px;" class="primary">连接</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Bridge / Agent 状态</div>
+        <div id="bridgeInfo" class="bridge-info">
+          <div class="row"><span class="key">Bridges:</span><span class="val" id="bridgeCount">-</span></div>
+          <div class="row"><span class="key">Agents:</span><span class="val" id="agentList">-</span></div>
+        </div>
+      </div>
+
+      <div class="section">
+          <div class="section-title">Agent</div>
+          <label for="agentSelect">目标 Agent</label>
+          <select id="agentSelect">
+            <option value="">-- 检测中 --</option>
+          </select>
+          <div class="status-row">
+            <span class="label">状态</span>
+            <span id="agentStatus" style="color:#73daca;">-</span>
+            <span style="font-size:11px;color:#565f89;">ACP 握手自动完成</span>
+            <button id="btnRefreshAgents" style="width:auto;padding:4px 12px;font-size:12px;">刷新</button>
+          </div>
+        </div>
+
+      <div class="section">
+        <div class="section-title">会话管理</div>
+        <label for="sessionSelect">已有会话</label>
+        <div class="btn-row" style="gap:4px;">
+          <select id="sessionSelect" style="flex:1;margin-bottom:0;">
+            <option value="">-- 选择会话 --</option>
+          </select>
+          <button id="btnRefreshSessions" style="width:auto;padding:8px 10px;font-size:12px;margin-bottom:0;">刷新</button>
+        </div>
+        <label for="sessionIdInput">Session ID</label>
+        <input type="text" id="sessionIdInput" placeholder="选择已有会话或留空自动创建">
+        <div class="btn-row">
+          <button id="btnNewSession" class="primary">New Session</button>
+          <button id="btnLoadSession">Load Session</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="section-title">Prompt 发送</div>
+        <label for="promptInput">Prompt 内容</label>
+        <textarea id="promptInput" placeholder="输入 prompt 文本...&#10;例如: 你好，请介绍一下你自己"></textarea>
+        <button id="btnSendPrompt" class="primary">发送 Prompt (Ctrl+Enter)</button>
+      </div>
+
+      <div class="section">
+        <div class="section-title">调试</div>
+        <div class="btn-row">
+          <button id="btnPing">Ping</button>
+          <button id="btnHealth">Health</button>
+          <button id="btnListSessions">Sessions</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 右面板：对话 + 日志 Tab -->
+    <div class="panel panel-right">
+      <div class="tab-bar">
+        <button id="tabConv" class="active">对话</button>
+        <button id="tabLog">日志</button>
+      </div>
+      <!-- 对话 Tab -->
+      <div id="tabConvContent" class="tab-content active">
+        <div id="convContainer" class="conv-container">
+          <div class="conv-msg conv-msg-empty" style="text-align:center;padding:24px;color:#565f89;font-size:13px;">
+            暂无对话 — 选择一个 Agent 并发送 Prompt
+          </div>
+        </div>
+      </div>
+      <!-- 日志 Tab -->
+      <div id="tabLogContent" class="tab-content">
+        <div id="logContainer" class="log-container"></div>
+        <div class="log-actions">
+          <span style="color:#565f89;font-size:12px;flex:1;" id="logCount">0 条日志</span>
+          <button id="btnClearLog">清空</button>
+          <button id="btnAutoScroll" style="border-color:#73daca;">自动滚动 ✓</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      'use strict';
+
+      // --- DOM 引用 ---
+      const $ = id => document.getElementById(id);
+      const logContainer = $('logContainer');
+      const connBadge = $('connBadge');
+      const statusText = $('statusText');
+      const agentSelect = $('agentSelect');
+      const sessionSelect = $('sessionSelect');
+      const agentStatus = $('agentStatus');
+      const promptInput = $('promptInput');
+      const sessionIdInput = $('sessionIdInput');
+      const logCount = $('logCount');
+      const convContainer = $('convContainer');
+      const bridgeCount = $('bridgeCount');
+      const agentList = $('agentList');
+
+      // --- 对话状态 ---
+      let currentConv = null; // { msgDiv, thoughtContent, responseDiv, thoughtParts[], responseParts[], toolCalls[], startTime }
+
+      // --- 状态 ---
+      let ws = null;
+      let connected = false;
+      let autoScroll = true;
+      let logEntries = 0;
+      let bridgeAgents = []; // 缓存最近一次 bridge/list 的 agents 数据
+
+      // --- 工具函数 ---
+      function now() {
+        const d = new Date();
+        return d.toLocaleTimeString('zh-CN', { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0');
+      }
+
+      function addLog(text, dir) {
+        const div = document.createElement('div');
+        div.className = 'log-entry';
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'time';
+        timeSpan.textContent = now();
+        div.appendChild(timeSpan);
+        const dirSpan = document.createElement('span');
+        dirSpan.className = 'dir ' + (dir || 'info');
+        dirSpan.textContent = dir === 'sent' ? '▶ 发送' : dir === 'recv' ? '◀ 接收' : dir === 'error' ? '✕ 错误' : '● 信息';
+        div.appendChild(dirSpan);
+
+        const textSpan = document.createElement('span');
+        if (typeof text === 'string') {
+          textSpan.textContent = text;
+        } else {
+          textSpan.textContent = JSON.stringify(text, null, 2);
+        }
+        div.appendChild(textSpan);
+
+        logContainer.appendChild(div);
+        logEntries++;
+        logCount.textContent = logEntries + ' 条日志';
+
+        if (autoScroll) {
+          div.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        }
+      }
+
+      function setConnected(state) {
+        connected = state;
+        connBadge.textContent = state ? '已连接' : '未连接';
+        connBadge.className = 'badge ' + (state ? 'connected' : 'disconnected');
+        statusText.textContent = state ? '已连接至 Bridge' : '等待连接...';
+        statusText.style.color = state ? '#73daca' : '#565f89';
+        $('btnConnect').textContent = state ? '断开' : '连接';
+
+        // 断开时禁用控件，连接时启用
+        const controlSelectors = [
+          agentSelect, sessionSelect, sessionIdInput, promptInput,
+          $('btnRefreshAgents'), $('btnNewSession'), $('btnSendPrompt'),
+          $('btnLoadSession'), $('btnPing'), $('btnHealth'), $('btnListSessions'),
+          $('btnRefreshSessions')
+        ];
+        controlSelectors.forEach(function(el) {
+          if (el) el.disabled = !state;
+        });
+      }
+
+      function formatJSON(obj) {
+        try {
+          return JSON.stringify(obj, null, 2);
+        } catch(e) {
+          return String(obj);
+        }
+      }
+
+      // --- Tab 切换 ---
+      function switchTab(name) {
+        const tabs = { conv: { btn: 'tabConv', content: 'tabConvContent' }, log: { btn: 'tabLog', content: 'tabLogContent' } };
+        Object.entries(tabs).forEach(function([key, t]) {
+          const btn = $(t.btn);
+          const content = $(t.content);
+          if (key === name) {
+            btn.classList.add('active');
+            content.classList.add('active');
+          } else {
+            btn.classList.remove('active');
+            content.classList.remove('active');
+          }
+        });
+      }
+
+      // --- 对话管理 ---
+      function showConvPrompt(agentId, promptText) {
+        // 创建新的对话条目
+        const nowStr = now();
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'conv-msg';
+        msgDiv.innerHTML =
+          '<div class="conv-msg-header">' + agentId + ' · 用户 · ' + nowStr + '</div>' +
+          '<div class="conv-msg-body">' + escapeHTML(promptText) + '</div>' +
+          '<div class="conv-thought" style="display:none;">' +
+            '<details><summary>🤔 思考过程</summary>' +
+              '<div class="conv-thought-content"></div>' +
+            '</details>' +
+          '</div>' +
+          '<div class="conv-response empty">⏳ 等待响应...</div>';
+
+        // 清除空状态提示
+        const emptyHint = convContainer.querySelector('.conv-msg-empty');
+        if (emptyHint) emptyHint.remove();
+        convContainer.appendChild(msgDiv);
+        msgDiv.scrollIntoView({ behavior: 'smooth', block: 'end' });
+
+        // 保存当前会话状态
+        const thoughtContent = msgDiv.querySelector('.conv-thought-content');
+        const responseDiv = msgDiv.querySelector('.conv-response');
+        currentConv = {
+          msgDiv: msgDiv,
+          thoughtEl: thoughtContent,
+          responseEl: responseDiv,
+          thoughtParts: [],
+          responseParts: [],
+          toolCalls: [],
+          startTime: Date.now()
+        };
+      }
+
+      // --- 渲染历史消息到对话区 ---
+      function renderHistoryMessages(messages) {
+        if (!messages || messages.length === 0) {
+          addLog('无历史消息', 'info');
+          return;
+        }
+        // 清除空状态提示
+        const emptyHint = convContainer.querySelector('.conv-msg-empty');
+        if (emptyHint) emptyHint.remove();
+
+        // 清除已有的非流式对话条目（保留流式中的条目）
+        const streamingMsg = convContainer.querySelector('.conv-response.streaming');
+        const existingMsgs = convContainer.querySelectorAll('.conv-msg');
+        existingMsgs.forEach(function(el) {
+          if (!streamingMsg || !el.contains(streamingMsg)) {
+            el.remove();
+          }
+        });
+
+        var agentId = agentSelect.value || 'kimi';
+        messages.forEach(function(m) {
+          var role = m.role || '?';
+          var text = m.text || '';
+          if (!text) return;
+
+          var nowStr = now();
+          var msgDiv = document.createElement('div');
+          msgDiv.className = 'conv-msg';
+
+          if (role === 'user') {
+            msgDiv.innerHTML =
+              '<div class="conv-msg-header">' + agentId + ' · 用户 · ' + nowStr + '</div>' +
+              '<div class="conv-msg-body">' + escapeHTML(text) + '</div>';
+          } else if (role === 'thought') {
+            msgDiv.innerHTML =
+              '<div class="conv-msg-header">' + agentId + ' · 思考 · ' + nowStr + '</div>' +
+              '<div class="conv-thought" style="display:block;">' +
+                '<details open>' +
+                  '<summary>🤔 思考过程</summary>' +
+                  '<div class="conv-thought-content">' + escapeHTML(text) + '</div>' +
+                '</details>' +
+              '</div>';
+          } else if (role === 'assistant') {
+            msgDiv.innerHTML =
+              '<div class="conv-msg-header">' + agentId + ' · 助手 · ' + nowStr + '</div>' +
+              '<div class="conv-response done">' + escapeHTML(text) + '</div>';
+          } else {
+            msgDiv.innerHTML =
+              '<div class="conv-msg-header">' + agentId + ' · ' + role + ' · ' + nowStr + '</div>' +
+              '<div class="conv-msg-body">' + escapeHTML(text) + '</div>';
+          }
+
+          convContainer.appendChild(msgDiv);
+        });
+
+        // 滚动到底部
+        var lastMsg = convContainer.lastElementChild;
+        if (lastMsg) lastMsg.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        addLog('已加载 ' + messages.length + ' 条历史消息到对话区', 'info');
+      }
+
+      function updateConvStream(ctype, text) {
+        if (!currentConv) return;
+        if (!text) return;
+
+        if (ctype === 'thought') {
+          currentConv.thoughtParts.push(text);
+          // 更新思考内容
+          const fullThought = currentConv.thoughtParts.join('');
+          currentConv.thoughtEl.textContent = fullThought;
+          // 显示思考块
+          const thoughtBlock = currentConv.msgDiv.querySelector('.conv-thought');
+          thoughtBlock.style.display = 'block';
+        } else if (ctype === 'response') {
+          currentConv.responseParts.push(text);
+          // 更新响应内容（实时显示）
+          const fullResponse = currentConv.responseParts.join('');
+          currentConv.responseEl.textContent = fullResponse;
+          currentConv.responseEl.className = 'conv-response streaming';
+        } else if (ctype === 'tool_call' || ctype === 'tool_result') {
+          currentConv.toolCalls.push({ type: ctype, text: text });
+        } else if (ctype === 'final') {
+          // final 由 finalizeConvStream 处理
+        }
+      }
+
+      function finalizeConvStream() {
+        if (!currentConv) return;
+        const elapsed = ((Date.now() - currentConv.startTime) / 1000).toFixed(1);
+        const fullResponse = currentConv.responseParts.join('');
+        const fullThought = currentConv.thoughtParts.join('');
+        const toolCount = currentConv.toolCalls.length;
+
+        // 更新响应样式
+        if (fullResponse) {
+          currentConv.responseEl.textContent = fullResponse;
+          currentConv.responseEl.className = 'conv-response done';
+        } else {
+          currentConv.responseEl.textContent = '(无文本响应)';
+          currentConv.responseEl.className = 'conv-response';
+        }
+
+        // 添加底部统计
+        const footer = document.createElement('div');
+        footer.className = 'conv-footer';
+        footer.textContent = '⏱ ' + elapsed + 's · 思考 ' + fullThought.length + ' 字 · 回答 ' + fullResponse.length + ' 字';
+        if (toolCount > 0) footer.textContent += ' · 工具 ' + toolCount + ' 次';
+        currentConv.msgDiv.appendChild(footer);
+
+        // 如果既没有思考也没有回答，显示完成状态
+        if (!fullThought && !fullResponse && toolCount === 0) {
+          currentConv.responseEl.textContent = '✅ 完成';
+          currentConv.responseEl.className = 'conv-response done';
+        }
+
+        currentConv = null;
+      }
+
+      function escapeHTML(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+      }
+
+      function convError(agentId, errorMsg) {
+        if (currentConv) {
+          currentConv.responseEl.textContent = '❌ ' + errorMsg;
+          currentConv.responseEl.className = 'conv-response';
+        } else {
+          // 没有当前对话时创建一个错误消息
+          const msgDiv = document.createElement('div');
+          msgDiv.className = 'conv-msg';
+          msgDiv.innerHTML = '<div class="conv-msg-header">' + agentId + ' · 错误</div>' +
+            '<div class="conv-msg-body" style="color:#f7768e;">❌ ' + escapeHTML(errorMsg) + '</div>';
+          const emptyHint = convContainer.querySelector('.conv-msg-empty');
+          if (emptyHint) emptyHint.remove();
+          convContainer.appendChild(msgDiv);
+        }
+        currentConv = null;
+      }
+
+      // --- WebSocket 连接 ---
+      function connect() {
+        if (connected) {
+          disconnect();
+          return;
+        }
+
+        try {
+          ws = new WebSocket('ws://localhost:9202/ws/admin');
+        } catch(e) {
+          addLog('WebSocket 创建失败: ' + e.message, 'error');
+          return;
+        }
+
+        ws.onopen = () => {
+          addLog('WebSocket 已连接', 'info');
+          setConnected(true);
+          // 自动刷新 Agent 列表
+          refreshAgents();
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            addLog(formatJSON(data), 'recv');
+
+            // Agent 列表响应 — 刷新 Agent 选择下拉框
+            if (data.id === 'req_agents' && data.result) {
+              updateAgentSelect(data.result);
+              // 自动选中第一个可用 Agent
+              const agents = data.result;
+              if (agents.length > 0) {
+                const firstId = typeof agents[0] === 'string' ? agents[0] : agents[0].agent_id;
+                agentSelect.value = firstId;
+                updateAgentStatusFromCache(firstId);
+                refreshSessions();
+              }
+              return;
+            }
+
+            // sessions/list 响应 — 刷新会话下拉框
+            if (data.id && data.id.startsWith('list_sessions_') && data.result !== undefined) {
+              const sessions = Array.isArray(data.result) ? data.result : [];
+              updateSessionSelect(sessions);
+              return;
+            }
+
+            // invoke session/new 响应 — 自动填入 session ID
+            if (data.id && data.id.startsWith('invoke_session_new_')) {
+              if (data.result && data.result.sessionId) {
+                sessionIdInput.value = data.result.sessionId;
+                addLog('会话创建成功: ' + data.result.sessionId, 'info');
+                // 创建成功后自动刷新会话列表
+                setTimeout(refreshSessions, 500);
+              } else if (data.error) {
+                addLog('创建会话失败: ' + data.error.message, 'error');
+              }
+              return;
+            }
+
+            // invoke session/prompt 响应 — 显示完成或错误
+            if (data.id && data.id.startsWith('invoke_prompt_')) {
+              if (data.error) {
+                addLog('Prompt 发送失败: ' + data.error.message, 'error');
+                convError(agentSelect.value || '?', data.error.message);
+              } else if (data.result) {
+                // 非流式响应
+                const text = data.result.text || data.result.content || JSON.stringify(data.result);
+                addLog('Prompt 完成: ' + text.substring(0, 200), 'info');
+                updateConvStream('response', text);
+                finalizeConvStream();
+              } else {
+                // 流式模式没有 result（已通过 session/update 推送），发送 final 信号
+                finalizeConvStream();
+              }
+              return;
+            }
+
+            // sessions/messages 响应 — 加载历史消息并渲染到对话区
+            if (data.id && data.id.startsWith('load_msgs_') && data.result) {
+              const msgs = data.result.messages || [];
+              addLog('历史消息加载完成: ' + msgs.length + ' 条', 'info');
+              // 渲染到对话区并自动切换对话 Tab
+              renderHistoryMessages(msgs);
+              switchTab('conv');
+              return;
+            }
+
+            // session/update 流式推送 — 更新对话区和日志
+            if (data.method === 'session/update' && data.params) {
+              const ctype = data.params.type || 'unknown';
+              const content = data.params.content;
+              // content.text 可能为空字符串（如 error 通知），此时用 '' 而非 JSON.stringify
+              const text = content ? (content.text !== undefined ? content.text : JSON.stringify(content)) : '';
+
+              // 仅 final 类型跳过日志中的空白内容（final 信号可能无 text）
+              if (text) {
+                addLog('[流式 ' + ctype + '] ' + text.substring(0, 150), 'recv');
+              }
+
+              if (ctype === 'final') {
+                finalizeConvStream();
+              } else {
+                updateConvStream(ctype, text);
+              }
+              return;
+            }
+
+            // ping 响应
+            if (data.id && data.id.startsWith('ping_') && data.result) {
+              addLog('Pong!', 'info');
+              return;
+            }
+
+            // bridge/health 响应
+            if (data.id && data.id.startsWith('health_') && data.result) {
+              const agents = Array.isArray(data.result) ? data.result.map(a => a.agent_id + '=' + a.status).join(', ') : '';
+              addLog('Health: agents=[' + agents + ']', 'info');
+              return;
+            }
+
+            // bridge/list 响应 — 更新 Bridge/Agent 状态区域
+            if (data.method === 'bridge/list' && data.params) {
+              const bridges = data.params.bridges || [];
+              bridgeCount.textContent = bridges.length;
+              if (bridges.length > 0) {
+                const agents = bridges[0].agents || [];
+                bridgeAgents = agents;
+                const agentIds = agents.map(a => typeof a === 'string' ? a : a.agent_id);
+                agentList.textContent = agentIds.join(', ');
+                updateAgentSelect(agents);
+                if (agents.length > 0) {
+                  const firstId = typeof agents[0] === 'string' ? agents[0] : agents[0].agent_id;
+                  agentSelect.value = firstId;
+                  updateAgentStatusFromCache(firstId);
+                  refreshSessions();
+                }
+              }
+              return;
+            }
+
+          } catch(e) {
+            addLog(event.data, 'recv');
+          }
+        };
+
+        ws.onerror = (err) => {
+          addLog('WebSocket 错误', 'error');
+        };
+
+        ws.onclose = (event) => {
+          addLog('WebSocket 断开 (code=' + event.code + ' reason=' + event.reason + ')', 'error');
+          setConnected(false);
+          ws = null;
+        };
+      }
+
+      function disconnect() {
+        if (ws) {
+          ws.close();
+          ws = null;
+        }
+        setConnected(false);
+        addLog('手动断开连接', 'info');
+      }
+
+      // --- 会话管理 ---
+      function refreshSessions() {
+        if (!connected || !ws) { addLog('请先连接', 'error'); return; }
+        const agentId = agentSelect.value;
+        if (!agentId) { addLog('请先选择 Agent', 'error'); return; }
+        sendMessage({ id: 'list_sessions_' + Date.now(), method: 'sessions/list', params: { agent_id: agentId } });
+      }
+
+      function updateSessionSelect(sessions) {
+        sessionSelect.innerHTML = '<option value="">-- 选择会话 --</option>';
+        if (!sessions || sessions.length === 0) return;
+        sessions.forEach(s => {
+          // Go 端返回 snake_case: session_id
+          const sid = s.session_id || s.sessionId || s;
+          const opt = document.createElement('option');
+          opt.value = sid;
+          const agentTag = s.agent_id ? (s.agent_id + ' → ') : '';
+          opt.textContent = agentTag + sid.substring(0, 24) + '...';
+          sessionSelect.appendChild(opt);
+        });
+        addLog('会话列表已更新: ' + sessions.length + ' 个会话', 'info');
+      }
+
+      // session 选择事件
+      sessionSelect.addEventListener('change', function() {
+        sessionIdInput.value = this.value;
+      });
+
+      // --- Agent 列表 ---
+      function refreshAgents() {
+        if (!connected || !ws) {
+          addLog('请先连接', 'error');
+          return;
+        }
+        sendMessage({ id: 'req_agents', method: 'admin/agents' });
+      }
+
+      function updateAgentSelect(agents) {
+        agentSelect.innerHTML = '<option value="">-- 选择 Agent --</option>';
+        if (!agents || agents.length === 0) {
+          agentSelect.innerHTML = '<option value="">-- 无可用 Agent --</option>';
+          return;
+        }
+        agents.forEach(a => {
+          const opt = document.createElement('option');
+          if (typeof a === 'string') {
+            // 旧格式：纯字符串 agent_id
+            opt.value = a;
+            opt.textContent = a;
+          } else {
+            // 新格式：{agent_id, status} 对象
+            opt.value = a.agent_id;
+            opt.textContent = a.agent_id + ' (' + (a.status || 'unknown') + ')';
+            if (a.status === 'idle') opt.style.color = '#73daca';
+          }
+          agentSelect.appendChild(opt);
+        });
+        const ids = agents.map(a => typeof a === 'string' ? a : a.agent_id);
+        addLog('Agent 列表已更新: ' + ids.join(', '), 'info');
+      }
+
+      // 根据缓存的 agents 数据更新 Agent 状态显示
+      function updateAgentStatusFromCache(agentId) {
+        if (!agentId || bridgeAgents.length === 0) {
+          agentStatus.textContent = '-';
+          return;
+        }
+        let found = null;
+        for (let i = 0; i < bridgeAgents.length; i++) {
+          const id = typeof bridgeAgents[i] === 'string' ? bridgeAgents[i] : bridgeAgents[i].agent_id;
+          if (id === agentId) {
+            found = bridgeAgents[i];
+            break;
+          }
+        }
+        const status = found && typeof found !== 'string' && found.status ? found.status : '-';
+        agentStatus.textContent = status;
+        if (status === 'idle') agentStatus.style.color = '#73daca';
+        else if (status === 'busy') agentStatus.style.color = '#e0af68';
+        else agentStatus.style.color = '#a9b1d6';
+      }
+
+      // Agent 选择变化时自动刷新会话列表并更新状态
+      agentSelect.addEventListener('change', function() {
+        if (this.value) {
+          updateAgentStatusFromCache(this.value);
+          refreshSessions();
+        }
+      });
+
+      // --- 发送消息 ---
+      function sendMessage(msg) {
+        if (!connected || !ws) {
+          addLog('未连接，无法发送', 'error');
+          return null;
+        }
+        try {
+          const json = JSON.stringify(msg);
+          ws.send(json);
+          addLog(formatJSON(msg), 'sent');
+          return msg.id;
+        } catch(e) {
+          addLog('发送失败: ' + e.message, 'error');
+          return null;
+        }
+      }
+
+      // --- ACP 操作 ---
+      function doNewSession() {
+        if (!connected) { addLog('请先连接', 'error'); return; }
+        const agentId = agentSelect.value;
+        if (!agentId) { addLog('请选择 Agent', 'error'); return; }
+
+        sendMessage({
+          id: 'invoke_session_new_' + Date.now(),
+          method: 'invoke',
+          params: { agent_id: agentId, method: 'session/new', params: {} }
+        });
+      }
+
+      function doSendPrompt() {
+        if (!connected) { addLog('请先连接', 'error'); return; }
+        const agentId = agentSelect.value;
+        if (!agentId) { addLog('请选择 Agent', 'error'); return; }
+
+        const text = promptInput.value.trim();
+        if (!text) { addLog('请输入 prompt 内容', 'error'); return; }
+
+        // 在对话区显示用户输入
+        showConvPrompt(agentId, text);
+        // 自动切换到对话 tab
+        switchTab('conv');
+
+        let sessionId = sessionIdInput.value.trim();
+        const params = { prompt: [{ type: 'text', text: text }] };
+        if (sessionId) {
+          params.sessionId = sessionId;
+        }
+
+        sendMessage({
+          id: 'invoke_prompt_' + Date.now() + '_stream',
+          method: 'invoke',
+          params: { agent_id: agentId, method: 'session/prompt', params: params }
+        });
+      }
+
+      function doLoadSession() {
+        if (!connected) { addLog('请先连接', 'error'); return; }
+        const agentId = agentSelect.value;
+        if (!agentId) { addLog('请选择 Agent', 'error'); return; }
+        const sid = sessionIdInput.value.trim();
+        if (!sid) { addLog('请输入 Session ID', 'error'); return; }
+
+        // 通过本地 MessageStore 加载历史消息（不依赖 Agent ACP session/load）
+        sendMessage({
+          id: 'load_msgs_' + Date.now(),
+          method: 'sessions/messages',
+          params: { agent_id: agentId, session_id: sid, limit: 50 }
+        });
+      }
+
+      function doPing() {
+        sendMessage({ id: 'ping_' + Date.now(), method: 'ping' });
+      }
+
+      function doHealth() {
+        if (!connected) { addLog('请先连接', 'error'); return; }
+        sendMessage({ id: 'health_' + Date.now(), method: 'bridge/health' });
+      }
+
+      function doListSessions() {
+        if (!connected) { addLog('请先连接', 'error'); return; }
+        sendMessage({ id: 'list_sessions_' + Date.now(), method: 'sessions/list', params: {} });
+      }
+
+      // --- 事件绑定 ---
+      $('btnConnect').addEventListener('click', connect);
+      $('btnRefreshAgents').addEventListener('click', refreshAgents);
+      $('btnNewSession').addEventListener('click', doNewSession);
+      $('btnSendPrompt').addEventListener('click', doSendPrompt);
+      $('btnLoadSession').addEventListener('click', doLoadSession);
+      $('btnPing').addEventListener('click', doPing);
+      $('btnHealth').addEventListener('click', doHealth);
+      $('btnListSessions').addEventListener('click', doListSessions);
+
+      // Tab 切换
+      $('tabConv').addEventListener('click', function() { switchTab('conv'); });
+      $('tabLog').addEventListener('click', function() { switchTab('log'); });
+
+      $('btnClearLog').addEventListener('click', () => {
+        logContainer.innerHTML = '';
+        logEntries = 0;
+        logCount.textContent = '0 条日志';
+      });
+
+      $('btnAutoScroll').addEventListener('click', function() {
+        autoScroll = !autoScroll;
+        this.textContent = autoScroll ? '自动滚动 ✓' : '自动滚动 ✗';
+        this.style.borderColor = autoScroll ? '#73daca' : '#565f89';
+      });
+
+      // 回车发送
+      promptInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && e.ctrlKey) {
+          e.preventDefault();
+          doSendPrompt();
+        }
+      });
+
+      // 初始日志
+      addLog('ACP 测试界面已加载，自动连接...', 'info');
+      addLog('提示: Ctrl+Enter 快速发送 Prompt', 'info');
+
+      // 自动连接
+      setTimeout(connect, 300);
+
+    })();
+  </script>
+</body>
+</html>

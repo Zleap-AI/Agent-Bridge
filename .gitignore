@@ -1,0 +1,28 @@
+# -*- coding: utf-8 -*-
+# Go 项目 .gitignore
+# Lzm 2026-07-13
+
+# 文档目录（不推送到仓库）
+docs/
+
+# 编译产物
+build/
+bin/
+*.exe
+bridge.exe~
+
+# Go 缓存
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 日志
+*.log
