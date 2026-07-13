@@ -341,15 +341,6 @@ func startAdminServer(port int, reg *agent.AgentRegistry, cfg *infra.Config) {
 				continue
 			}
 
-			// 处理 env/check — 环境检查
-			if anpMsg.Method == "env/check" {
-				response := adminRouter.HandleEnvCheck(&anpMsg)
-				if response != nil {
-					infra.WriteJSON(conn, response)
-				}
-				continue
-			}
-
 			// 处理 invoke — 通过 RequestRouter 转发到 Agent
 			if anpMsg.Method == "invoke" {
 				response := adminRouter.Route(ctx, &anpMsg, sessionMgr)

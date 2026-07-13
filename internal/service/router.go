@@ -23,8 +23,9 @@ import (
 
 // RequestRouter ANP 消息路由器
 type RequestRouter struct {
-	registry *agent.AgentRegistry
-	streamCB StreamCallback // 流式推送回调（由 TunnelService 设置）
+	registry        *agent.AgentRegistry
+	streamCB        StreamCallback      // 流式推送回调（由 TunnelService 设置）
+	finalResponseCB InvokeFinalCallback // 流式最终响应回调（由 TunnelService 设置）
 }
 
 // NewRequestRouter 创建消息路由器
@@ -38,6 +39,12 @@ func NewRequestRouter(registry *agent.AgentRegistry) *RequestRouter {
 // Lzm 2026-07-09
 func (r *RequestRouter) SetStreamCallback(cb StreamCallback) {
 	r.streamCB = cb
+}
+
+// SetFinalResponseCallback 设置流式调用最终响应回调
+// Lzm 2026-07-13
+func (r *RequestRouter) SetFinalResponseCallback(cb InvokeFinalCallback) {
+	r.finalResponseCB = cb
 }
 
 // Route 将 ANP 消息路由到对应处理器，返回响应消息
@@ -316,10 +323,16 @@ func (r *RequestRouter) streamPrompt(ctx context.Context, msg *protocol.ANPMessa
 					chunkCh, retryErr = a.Stream(ctx, acpReq)
 					if retryErr != nil {
 						r.streamCB(msg.ID, "error", "重试失败: "+retryErr.Error())
+						if r.finalResponseCB != nil {
+							r.finalResponseCB(msg.ID, nil, "重试失败: "+retryErr.Error())
+						}
 						return
 					}
 				} else {
 					r.streamCB(msg.ID, "error", "创建新会话失败: "+err.Error())
+					if r.finalResponseCB != nil {
+						r.finalResponseCB(msg.ID, nil, "创建新会话失败: "+err.Error())
+					}
 					return
 				}
 			} else {
@@ -379,6 +392,17 @@ func (r *RequestRouter) streamPrompt(ctx context.Context, msg *protocol.ANPMessa
 
 		// 流式完成后，自动保存消息
 		r.persistPromptMessages(sessionMgr, agentID, sessionID, userText, thoughtParts, responseParts)
+
+		// 发送 invoke 最终响应（告知 SaaS 调用完成）
+		if r.finalResponseCB != nil {
+			fullText := strings.Join(responseParts, "")
+			if fullText != "" {
+				resultBytes, _ := json.Marshal(map[string]string{"text": fullText})
+				r.finalResponseCB(msg.ID, resultBytes, "")
+			} else {
+				r.finalResponseCB(msg.ID, nil, "")
+			}
+		}
 	}()
 
 	// 流式模式返回 nil，结果通过回调推送
@@ -546,36 +570,9 @@ func (r *RequestRouter) HandleSessionMessages(msg *protocol.ANPMessage, sessionM
 	return protocol.NewResultResponse(msg.ID, result)
 }
 
-// HandleEnvCheck 处理环境检查请求（WebSocket API）
-// 返回各 Agent 的环境状态
-// Lzm 2026-07-10
-func (r *RequestRouter) HandleEnvCheck(msg *protocol.ANPMessage) *protocol.ANPMessage {
-	type agentEnv struct {
-		AgentID   string   `json:"agent_id"`
-		Name      string   `json:"name"`
-		Status    string   `json:"status"`
-		EnvReady  bool     `json:"env_ready"`
-		EnvIssues []string `json:"env_issues,omitempty"`
-	}
-
-	var agents []agentEnv
-	for _, a := range r.registry.List() {
-		info := agentEnv{
-			AgentID:  a.ID(),
-			Name:     a.DisplayName(),
-			Status:   a.Status().String(),
-			EnvReady: a.Status() != agent.AgentDisconnected,
-		}
-		agents = append(agents, info)
-	}
-
-	result, _ := json.Marshal(map[string]interface{}{
-		"agents": agents,
-		"count":  len(agents),
-	})
-
-	return protocol.NewResultResponse(msg.ID, result)
-}
-
 // StreamCallback 流式推送回调（由 TunnelService 设置）
 type StreamCallback func(requestID string, chunkType string, text string) error
+
+// InvokeFinalCallback 流式调用最终响应回调（由 TunnelService 设置）
+// 在流式输出全部完成后，发送 invoke 的最终 JSON-RPC 结果
+type InvokeFinalCallback func(requestID string, result json.RawMessage, errMsg string)

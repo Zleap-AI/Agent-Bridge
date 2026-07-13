@@ -3,8 +3,8 @@
 > 本地 AI Agent 桥接器 — 将本地 Agent 能力通过 WebSocket 隧道暴露给云端 SaaS 平台
 
 - **作者**：Lzm
-- **日期**：2026-07-10
-- **版本**：v0.2.0
+- **日期**：2026-07-13
+- **版本**：v0.3.0
 - **语言**：Go 1.26+
 - **编码**：UTF-8
 
@@ -28,7 +28,7 @@
 
 zleap-bridge 是一个本地 AI Agent 桥接器，核心使命是：
 
-> **扫描本地安装的 AI Agent（如 Claude Code、Codex、Kimi、OpenCode、Gemini CLI、GitHub Copilot、pi、Cursor、GLM Agent、OpenClaw），通过标准化协议将它们暴露出来，使云端 SaaS 平台可以远程调用本地的 Agent 能力。**
+> **扫描本地安装的 AI Agent（如 Claude Code、Codex、Kimi、OpenCode、Gemini CLI、GitHub Copilot、pi、Cursor、GLM Agent、OpenClaw、Hermes Agent），通过标准化协议将它们暴露出来，使云端 SaaS 平台可以远程调用本地的 Agent 能力。**
 
 它解决了两个关键问题：
 
@@ -67,10 +67,10 @@ zleap-bridge 是一个本地 AI Agent 桥接器，核心使命是：
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐    │
 │  │  RequestRouter                                               │    │
-│  │  ┌──────────┐ ┌───────────┐ ┌──────────┐ ┌──────────────┐   │    │
-│  │  │ invoke   │ │sessions/  │ │sessions/ │ │ env/check    │   │    │
-│  │  │ Agent调用 │ │list 列表  │ │messages  │ │ 环境检查     │   │    │
-│  │  └──────────┘ └───────────┘ └──────────┘ └──────────────┘   │    │
+│  │  ┌──────────┐ ┌───────────┐ ┌──────────┐                      │    │
+│  │  │ invoke   │ │sessions/  │ │sessions/ │                      │    │
+│  │  │ Agent调用 │ │list 列表  │ │messages  │                      │    │
+│  │  └──────────┘ └───────────┘ └──────────┘                      │    │
 │  └──────────────────────────────────────────────────────────────┘    │
 │  ┌──────────────────────────────────────────────────────────────┐    │
 │  │  SessionManager — 会话管理器                                   │    │
@@ -94,12 +94,12 @@ zleap-bridge 是一个本地 AI Agent 桥接器，核心使命是：
 │  │  claude-     │ │ codex-acp│ │ kimi │ │ opencode │              │
 │  │  agent-acp   │ │ wrapper  │ │ acp  │ │ acp      │              │
 │  └──────────────┘ └──────────┘ └──────┘ └──────────┘              │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐│
-│  │  Gemini CLI  │ │ GitHub       │ │  pi          │ │  Cursor      │ │  GLM Agent   │ │  OpenClaw    ││
-│  │  gemini --   │ │ Copilot CLI  │ │  pi-acp      │ │  agent acp   │ │  glm-acp-    │ │  openclaw    ││
-│  │  experimental│ │ copilot --acp│ │  (pi rpc     │ │              │ │  agent       │ │  acp (       ││
-│  │  -acp        │ │              │ │   bridge)    │ │              │ │              │ │  Gateway桥)  ││
-│  └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘│
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐│
+│  │  Gemini CLI  │ │ GitHub       │ │  pi          │ │  Cursor      │ │  GLM Agent   │ │  OpenClaw    │ │  Hermes      ││
+│  │  gemini --   │ │ Copilot CLI  │ │  pi-acp      │ │  agent acp   │ │  glm-acp-    │ │  openclaw    │ │  Agent       ││
+│  │  experimental│ │ copilot --acp│ │  (pi rpc     │ │              │ │  agent       │ │  acp (       │ │  hermes acp  ││
+│  │  -acp        │ │              │ │   bridge)    │ │              │ │              │ │  Gateway桥)  │ │              ││
+│  └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘│
 │                                                                      │
 │  ┌──────────────────────────────────────────────────────────────┐    │
 │  │  baseAgent — 公共基础实现                                     │    │
@@ -150,9 +150,13 @@ Bridge 连接 SaaS WebSocket 时携带以下 HTTP Header：
 | Bridge → SaaS | `bridge/register` | 连接建立后 | 注册 Bridge 身份和可用 Agent 列表 |
 | SaaS → Bridge | `invoke` | 用户发起请求 | 调用指定 Agent 的指定方法 |
 | Bridge → SaaS | `session/update` | Agent 流式输出 | 实时推送思考/回复片段 |
-| Bridge → SaaS | `invoke` 的响应 | Agent 处理完成 | 最终调用结果 |
-| SaaS → Bridge | `ping` | 心跳检查 | 保活探测 |
+| Bridge → SaaS | `invoke` 的响应 | Agent 处理完成 | 最终调用结果（流式模式也会发送） |
+| SaaS/Bridge Admin | `sessions/list` | 查询会话列表 | 列出指定 Agent 的所有会话（可通过 TunnelService 或 Admin WS 调用） |
+| SaaS/Bridge Admin | `sessions/messages` | 查询会话消息 | 列出指定会话的消息历史（可通过 TunnelService 或 Admin WS 调用） |
+| SaaS → Bridge | `ping` | 主动探测链路 | 应用层心跳检测 |
 | Bridge → SaaS | `pong` | 收到 ping 后 | 心跳回复 |
+
+> **注意**：应用层 `ping`/`pong` 方法与 WebSocket 协议层的 Ping 帧（gorilla/websocket 内建，每 30 秒自动发送）独立工作，互不干扰。
 
 ### 3.4 关键消息格式
 
@@ -206,7 +210,16 @@ Bridge 连接 SaaS WebSocket 时携带以下 HTTP Header：
 }
 ```
 
-type 取值：`thought`（思考过程）、`response`（回复片段）、`final`（最终结果）、`error`（错误）
+type 取值：`thought`（思考过程）、`response`（回复片段）、`final`（最终结果）、`error`（错误）、`session_invalid`（会话失效）、`session_refreshed`（会话已刷新）
+
+| type | 说明 |
+|------|------|
+| `thought` | Agent 的思考过程片段（流式推送） |
+| `response` | Agent 的回复片段（流式推送） |
+| `final` | 最终结果（Codex 流式完成时推送） |
+| `error` | 流式处理出错 |
+| `session_invalid` | 当前 session 已失效（Agent 内部超时或异常退出），需重新创建 |
+| `session_refreshed` | Bridge 自动创建了新 session 并替换了旧 session，携带新 sessionId |
 
 **invoke 响应（Bridge → SaaS）**：
 
@@ -228,6 +241,25 @@ type 取值：`thought`（思考过程）、`response`（回复片段）、`fina
 }
 ```
 
+**session/load 成功响应（Bridge → SaaS）**：
+
+当 SaaS 请求加载已有会话时，Bridge 返回会话状态和历史消息：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "req_001",
+  "result": {
+    "status": "ok",
+    "sessionId": "sess_xxx",
+    "messages": [
+      {"role": "user", "text": "你好"},
+      {"role": "assistant", "text": "你好！有什么可以帮助你的？"}
+    ]
+  }
+}
+```
+
 ### 3.5 错误码定义
 
 | 错误码 | 说明 |
@@ -244,21 +276,80 @@ type 取值：`thought`（思考过程）、`response`（回复片段）、`fina
 | `-31008` | Agent 响应错误 |
 | `-31009` | Agent 返回未知响应 |
 
+### 3.6 sessions/list 协议格式
+
+`sessions/list` 是 Admin WebSocket API 方法，用于查询指定 Agent 的历史会话列表。
+
+**请求格式**：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "method": "sessions/list",
+  "params": {
+    "agent_id": "kimi"
+  }
+}
+```
+
+`agent_id` 为可选参数，不传时返回所有 Agent 的会话。
+
+**响应格式**：
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "1",
+  "result": [
+    {
+      "agent_id": "kimi",
+      "session_id": "sess_xxx",
+      "message_count": 5,
+      "updated_at": 1790000000
+    }
+  ]
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `agent_id` | string | Agent 标识 |
+| `session_id` | string | 会话 ID |
+| `message_count` | int | 消息数量（仅持久化会话） |
+| `updated_at` | int | 最后更新时间戳（仅持久化会话） |
+
 ---
 
 ## 4. 本地 Agent 检索规则
 
 ### 4.1 发现策略
 
-扫描路径优先级（详见 [registry.go](internal/agent/registry.go)）：
+扫描路径包括系统 PATH 和平台特定搜索目录（详见 [registry.go](internal/agent/registry.go)）：
 
+**通用路径**：
 ```
-1. 系统 PATH 环境变量中的所有目录
-2. %APPDATA%\npm（npm 全局安装目录）
-3. %LOCALAPPDATA%\npm
-4. npm root -g 命令返回值
-5. %LOCALAPPDATA%\OpenAI\Codex\bin\{version}\（Codex 专用安装路径）
-6. 当前工作目录
+系统 PATH 环境变量中的所有目录
+当前工作目录
+~/.local/bin（跨平台，Cursor CLI 安装位置）
+```
+
+**Windows 额外路径**：
+```
+%APPDATA%\npm
+%LOCALAPPDATA%\npm
+npm root -g 命令返回值
+%LOCALAPPDATA%\OpenAI\Codex\bin\{version}\（Codex 专用安装路径）
+%LOCALAPPDATA%\Cursor（Cursor CLI 安装位置）
+```
+
+**macOS 额外路径**：
+```
+/usr/local/bin
+/opt/homebrew/bin
+~/.npm-global/bin
+~/.volta/bin
+~/.local/bin
 ```
 
 ### 4.2 候选 Agent 列表
@@ -275,6 +366,7 @@ type 取值：`thought`（思考过程）、`response`（回复片段）、`fina
 | `cursor` | `agent` | `["acp"]` | 内置 ACP（子命令） |
 | `glm` | `glm-acp-agent` | (无) | ACP Agent（GLM Coding Plan） |
 | `openclaw` | `openclaw` | `["acp"]` | ACP 桥接（→ OpenClaw Gateway） |
+| `hermes` | `hermes` | `["acp"]` | ACP 适配器（Python，需安装 `.[acp]`） |
 
 ### 4.3 自动安装机制
 
@@ -297,7 +389,7 @@ npm install --prefix %TEMP%\.npm-global -g @agentclientprotocol/codex-acp
 
 > 每个 Agent 的详细对接文档见 [docs/agents/](docs/agents/) 目录。
 
-以下记录了今日（2026-07-11）新增 Agent 的对接信息，包括安装、认证、启动参数和注意事项。
+以下记录了新增 Agent 的对接信息，包括安装、认证、启动参数和注意事项。
 
 #### 4.5.1 `gemini` — Gemini CLI
 
@@ -367,7 +459,24 @@ npm install --prefix %TEMP%\.npm-global -g @agentclientprotocol/codex-acp
 | **注意事项** | 需要 Node.js ≥ 20；使用智谱 AI Coding Plan 端点（`https://api.z.ai/api/coding/paas/v4`），并非通用 API |
 | **平台兼容** | macOS ✅ / Windows ✅ |
 
-#### 4.5.6 `openclaw` — OpenClaw ACP 桥接
+#### 4.5.6 `hermes` — Hermes Agent
+
+| 项目 | 内容 |
+|------|------|
+| **Agent ID** | `hermes` |
+| **安装方式** | `pip install hermes-agent` + `pip install -e '.[acp]'` |
+| **可执行文件** | `hermes`（ACP 模式需额外安装 `.[acp]`） |
+| **启动参数** | `["acp"]` |
+| **ACP 方式** | ACP 适配器（Python 实现） |
+| **认证** | `~/.hermes/.env` 中配置模型 API Key |
+| **配置方式** | `hermes model` 命令或在 `~/.hermes/.env` 中手动配置 |
+| **GitHub** | https://github.com/NicePkg/Hermes |
+| **ACP 文档** | https://hermesagent.org.cn/docs/user-guide/features/acp |
+| **前置条件** | Python ≥ 3.10；必须安装 ACP 附加组件 `pip install -e '.[acp]'` |
+| **注意事项** | Hermes 是独立运行的完整 Agent（文件工具、终端、网络/浏览器等），与 OpenClaw 不同，不需要 Gateway 服务；日志输出到 stderr |
+| **平台兼容** | macOS ✅ / Windows ✅ / Linux ✅ |
+
+#### 4.5.7 `openclaw` — OpenClaw ACP 桥接
 
 | 项目 | 内容 |
 |------|------|
@@ -475,6 +584,9 @@ type Agent interface {
 | Claude / Kimi / OpenCode | `agent_message_chunk` | `StreamChunkResponse` |
 | Claude / Kimi / OpenCode | `thought_chunk` | `StreamChunkThought` |
 | Claude / Kimi / OpenCode | `message_chunk` | `StreamChunkResponse` |
+| 通用 | `thinking_chunk` | `StreamChunkThought` |
+| 通用 | `agent_response_chunk` | `StreamChunkResponse` |
+| 通用 | `content_chunk` | `StreamChunkResponse` |
 | Codex（codex-acp wrapper） | `type: "response"` | `StreamChunkResponse` |
 | Codex（codex-acp wrapper） | `type: "final"` | `StreamChunkFinal` |
 | Codex（codex-acp wrapper） | `type: "error"` | `StreamChunkError` |
@@ -675,12 +787,12 @@ zleap-bridge.exe --debug --port 9202
 启动后观察日志，正常输出如下：
 
 ```
-INFO 启动 Agent: kimi          agent=kimi
-INFO 启动 Agent: opencode      agent=opencode
-INFO 启动 Agent: claude-code   agent=claude-code
-INFO 启动 Agent: codex         agent=codex
-INFO ACP 握手成功              agent=kimi protocol=1
-INFO Admin HTTP 服务启动       address=:9202
+time=2026-07-13 15:04:05 level=INFO msg="正在启动 Agent" id=kimi
+time=2026-07-13 15:04:05 level=INFO msg="正在启动 Agent" id=opencode
+time=2026-07-13 15:04:05 level=INFO msg="正在启动 Agent" id=claude-code
+time=2026-07-13 15:04:05 level=INFO msg="正在启动 Agent" id=codex
+time=2026-07-13 15:04:05 level=INFO msg="ACP 握手成功" id=kimi protocol=1
+time=2026-07-13 15:04:05 level=INFO msg="Admin HTTP 服务启动" address=:9202
 ```
 
 看到 "ACP 握手成功" 表示 Agent 已就绪。
@@ -724,6 +836,7 @@ sequenceDiagram
   "token": "ws_token_xxx",
   "server_url": "wss://saas.example.com/ws",
   "admin_port": 9202,
+  "claude_settings_file": "",
   "debug": false
 }
 ```
@@ -813,10 +926,9 @@ zleap-bridge.exe --debug
 日志格式示例：
 
 ```
-级别    时间                     消息                    标签
-INFO  2026-07-10T15:04:05+08:00  ACP 握手成功             agent=kimi protocol=1
-DEBUG 2026-07-10T15:04:06+08:00  doLoadSession: 发送ACP   agent=kimi session_id=sess_xxx cwd=C:\Users\...
-WARN  2026-07-10T15:04:06+08:00  doLoadSession: Agent返回  agent=kimi session_id=sess_xxx error_code=-32602
+time=2026-07-13 15:04:05 level=INFO msg="ACP 握手成功" id=kimi protocol=1
+time=2026-07-13 15:04:06 level=DEBUG msg="doLoadSession: 发送ACP" id=kimi session_id=sess_xxx cwd=C:\Users\...
+time=2026-07-13 15:04:06 level=WARN msg="doLoadSession: Agent返回错误" id=kimi session_id=sess_xxx error_code=-32602
 ```
 
 **日志级别说明：**

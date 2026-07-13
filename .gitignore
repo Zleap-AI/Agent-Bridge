@@ -19,6 +19,7 @@ vendor/
 .vscode/
 *.swp
 *.swo
+.trae/
 
 # 系统
 .DS_Store
@@ -26,3 +27,4 @@ Thumbs.db
 
 # 日志
 *.log
+

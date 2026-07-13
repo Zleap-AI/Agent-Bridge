@@ -85,6 +85,22 @@ func NewTunnelService(registry *agent.AgentRegistry, cfg TunnelConfig) *TunnelSe
 		return fmt.Errorf("WebSocket 未连接")
 	})
 
+	// 设置流式最终响应回调 — 流式完成后发送 invoke 结果
+	svc.router.SetFinalResponseCallback(func(requestID string, result json.RawMessage, errMsg string) {
+		if svc.wsClient == nil {
+			return
+		}
+		if errMsg != "" {
+			// 发送错误响应
+			resp := protocol.NewErrorResponse(requestID, -31008, errMsg)
+			svc.wsClient.SendJSON(resp)
+		} else if result != nil {
+			// 发送正常结果
+			resp := protocol.NewResultResponse(requestID, result)
+			svc.wsClient.SendJSON(resp)
+		}
+	})
+
 	return svc
 }
 
