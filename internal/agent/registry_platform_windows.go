@@ -18,7 +18,7 @@ import (
 )
 
 // getExtraSearchPaths 返回 Windows 特有的可执行文件搜索路径
-// Lzm 2026-07-11
+// Lzm 2026-07-13
 func getExtraSearchPaths() []string {
 	home, _ := os.UserHomeDir()
 	return []string{
@@ -26,6 +26,8 @@ func getExtraSearchPaths() []string {
 		os.Getenv("APPDATA") + "\\npm",
 		filepath.Join(home, ".local", "bin"), // WSL/Cursor CLI 安装路径
 		filepath.Join(home, "AppData", "Local", "Cursor"), // Cursor Windows 路径
+		filepath.Join(home, "AppData", "Local", "cursor-agent"), // Cursor Agent CLI 安装路径
+		filepath.Join(home, "AppData", "Local", "GitHub CLI", "copilot"), // Copilot CLI (gh extension) 安装路径
 	}
 }
 

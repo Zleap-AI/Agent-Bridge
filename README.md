@@ -354,19 +354,23 @@ npm root -g 命令返回值
 
 ### 4.2 候选 Agent 列表
 
-| Agent ID | 可执行文件 | 启动参数 | ACP 支持方式 |
-|----------|-----------|---------|-------------|
-| `claude-code` | `claude-agent-acp` | (无) | 内置 ACP（npm wrapper） |
-| `codex` | `codex-acp`（优先）或 `codex` | (无) | Wrapper（`@agentclientprotocol/codex-acp`） |
-| `kimi` | `kimi` | `["acp"]` | 内置 ACP（子命令） |
-| `opencode` | `opencode` | `["acp"]` | 内置 ACP（子命令） |
-| `gemini` | `gemini` | `["--experimental-acp"]` | 内置 ACP（标志位） |
-| `copilot` | `copilot` | `["--acp"]` | 内置 ACP（标志位） |
-| `pi` | `pi-acp` | (无) | ACP 适配器（`pi --mode rpc` 桥接） |
-| `cursor` | `agent` | `["acp"]` | 内置 ACP（子命令） |
-| `glm` | `glm-acp-agent` | (无) | ACP Agent（GLM Coding Plan） |
-| `openclaw` | `openclaw` | `["acp"]` | ACP 桥接（→ OpenClaw Gateway） |
-| `hermes` | `hermes` | `["acp"]` | ACP 适配器（Python，需安装 `.[acp]`） |
+| Agent ID | 可执行文件 | 启动参数 | ACP 支持方式 | 对接状态 |
+|----------|-----------|---------|-------------|:-------:|
+| `claude-code` | `claude-agent-acp` | (无) | 内置 ACP（npm wrapper） | ✅ 已对接 |
+| `codex` | `codex-acp`（优先）或 `codex` | (无) | Wrapper（`@agentclientprotocol/codex-acp`） | ✅ 已对接 |
+| `kimi` | `kimi` | `["acp"]` | 内置 ACP（子命令） | ✅ 已对接 |
+| `opencode` | `opencode` | `["acp"]` | 内置 ACP（子命令） | ✅ 已对接 |
+| `gemini` | `gemini` | `["--experimental-acp"]` | 内置 ACP（标志位） | 🚧 开发中 |
+| `copilot` | `copilot` | `["--acp"]` | 内置 ACP（标志位） | 🚧 开发中 |
+| `pi` | `pi-acp` | (无) | ACP 适配器（`pi --mode rpc` 桥接） | 🚧 开发中 |
+| `cursor` | `agent` | `["acp"]` | 内置 ACP（子命令） | 🚧 开发中 |
+| `glm` | `glm-acp-agent` | (无) | ACP Agent（GLM Coding Plan） | 🚧 开发中 |
+| `openclaw` | `openclaw` | `["acp"]` | ACP 桥接（→ OpenClaw Gateway） | 🚧 开发中 |
+| `hermes` | `hermes` | `["acp"]` | ACP 适配器（Python，需安装 `.[acp]`） | 🚧 开发中 |
+
+> **对接状态说明**：
+> - **✅ 已对接** — ACP 握手 → 会话创建 → 对话 → 消息历史 → 会话加载 全链路测试通过
+> - **🚧 开发中** — Agent 已发现并注册，但需补充配置（API Key / 登录认证 / 外部服务）后方可完成全链路对接
 
 ### 4.3 自动安装机制
 
@@ -409,12 +413,13 @@ npm install --prefix %TEMP%\.npm-global -g @agentclientprotocol/codex-acp
 | 项目 | 内容 |
 |------|------|
 | **Agent ID** | `copilot` |
-| **安装方式** | `npm install -g @github/copilot-cli` |
-| **可执行文件** | `copilot` |
+| **安装方式** | `gh extension install github/gh-copilot`（gh ≥ 2.96 已内置，无需额外安装） |
+| **可执行文件** | `copilot`（位于 `%LOCALAPPDATA%\GitHub CLI\copilot\`） |
 | **启动参数** | `["--acp"]` |
 | **ACP 方式** | 内置 ACP（标志位） |
 | **认证** | GitHub 账号登录（首次使用需运行 `copilot login` 完成 OAuth 认证） |
-| **注意事项** | 无需 API Key 环境变量；`--acp` 使用 stdio 模式，不使用默认的 PTY 模式 |
+| **前置依赖** | GitHub CLI（`gh`）— `winget install GitHub.cli` 或 https://cli.github.com |
+| **注意事项** | `@github/copilot-cli` npm 包已废弃，改由 `gh copilot` 命令管理；`--acp` 使用 stdio 模式，不使用默认的 PTY 模式 |
 | **平台兼容** | macOS ✅ / Windows ✅ |
 
 #### 4.5.3 `pi` — pi Coding Agent
