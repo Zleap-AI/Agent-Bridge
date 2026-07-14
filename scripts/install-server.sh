@@ -211,6 +211,40 @@ fetch_health() {
   fi
 }
 
+configure_host_firewall() {
+  local host="${1,,}" port="$2"
+
+  case "$host" in
+    localhost|127.*|::1)
+      log "Loopback listener ${listen_addr}; host firewall unchanged."
+      return
+      ;;
+  esac
+
+  if command -v ufw >/dev/null 2>&1 &&
+    LC_ALL=C ufw status 2>/dev/null | grep -q '^Status: active'; then
+    if ufw allow "${port}/tcp" >/dev/null; then
+      log "Allowed TCP ${port} through UFW."
+    else
+      log "WARNING: UFW is active but TCP ${port} could not be allowed automatically."
+    fi
+    return
+  fi
+
+  if command -v firewall-cmd >/dev/null 2>&1 &&
+    firewall-cmd --state >/dev/null 2>&1; then
+    if firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null &&
+      firewall-cmd --reload >/dev/null; then
+      log "Allowed TCP ${port} through firewalld."
+    else
+      log "WARNING: firewalld is active but TCP ${port} could not be allowed automatically."
+    fi
+    return
+  fi
+
+  log "No active UFW or firewalld detected; verify any custom firewall allows TCP ${port}."
+}
+
 if [[ -r /etc/os-release ]]; then
   # shellcheck disable=SC1091
   . /etc/os-release
@@ -585,6 +619,7 @@ if [[ "$healthy" != true ]]; then
 fi
 
 install_succeeded=true
+configure_host_firewall "$listen_host" "$listen_port"
 
 if [[ -z "$public_url" ]]; then
   public_url="${health_scheme}://SERVER_PUBLIC_IP:${listen_port}"
@@ -593,7 +628,7 @@ fi
 
 log "Installed Agent-Bridge Server ${version}"
 log "Service status: systemctl status ${service_name}"
-log "Open TCP port ${listen_port} in your host firewall or cloud security group if needed."
+log "Cloud security groups must allow TCP ${listen_port}; active UFW or firewalld is configured automatically."
 if [[ "$public_url_is_placeholder" == true ]]; then
   log "No public IP was detected. Replace SERVER_PUBLIC_IP in the Setup URL with this server's public IP or domain."
 fi
