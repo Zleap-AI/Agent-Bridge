@@ -1,8 +1,8 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // main.go
-// zleap-bridge 入口点 — Phase 2: 核心链路
+// Agent-Bridge 入口点 — Phase 2: 核心链路
 // Agent 发现 → ACP 握手 → WebSocket Tunnel 服务
 //
 // Lzm 2026-07-09
@@ -22,11 +22,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Zleap-AI/Agent-Bridge/internal/agent"
+	"github.com/Zleap-AI/Agent-Bridge/internal/infra"
+	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
+	"github.com/Zleap-AI/Agent-Bridge/internal/service"
 	"github.com/gorilla/websocket"
-	"github.com/zleap/bridge/internal/agent"
-	"github.com/zleap/bridge/internal/infra"
-	"github.com/zleap/bridge/internal/protocol"
-	"github.com/zleap/bridge/internal/service"
 )
 
 //go:embed html/*.html
@@ -45,7 +45,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "初始化日志失败: %v\n", err)
 		os.Exit(1)
 	}
-	slog.Info("zleap-bridge 启动",
+	slog.Info("Agent-Bridge 启动",
 		"version", version,
 		"debug", *debug,
 		"port", *port,
@@ -93,7 +93,7 @@ func main() {
 	// 等待 Agent 启动完成
 	time.Sleep(2 * time.Second)
 
-	// 3. 启动 TunnelService（连接 SaaS）
+	// 3. 启动 TunnelService（连接远程服务）
 	tunnelCfg := service.DefaultTunnelConfig()
 	tunnelCfg.ServerURL = cfg.ServerURL
 	tunnelCfg.BridgeID = cfg.BridgeID
@@ -101,7 +101,7 @@ func main() {
 
 	tunnel := service.NewTunnelService(reg, tunnelCfg)
 	if err := tunnel.Start(); err != nil {
-		slog.Warn("TunnelService 启动失败（SaaS 可能未就绪）",
+		slog.Warn("TunnelService 启动失败（远程服务可能未就绪）",
 			"error", err,
 		)
 		// 不阻塞启动，Admin 接口仍然可用
@@ -142,10 +142,10 @@ func startAdminServer(port int, reg *agent.AgentRegistry, cfg *infra.Config) {
 		}
 	}
 	http.HandleFunc("/test_acp.html", htmlContent("test_acp.html"))
-	http.HandleFunc("/test_saas.html", htmlContent("test_saas.html"))
+	http.HandleFunc("/test_remote.html", htmlContent("test_remote.html"))
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/" {
-			http.Redirect(w, r, "/test_acp.html", http.StatusFound)
+			http.Redirect(w, r, "/test_remote.html", http.StatusFound)
 			return
 		}
 		http.NotFound(w, r)
@@ -243,7 +243,7 @@ func startAdminServer(port int, reg *agent.AgentRegistry, cfg *infra.Config) {
 			return infra.WriteJSON(conn, update)
 		})
 
-		// 发送 bridge/list 欢迎通知（兼容 test_saas.html 等前端）
+		// 发送 bridge/list 欢迎通知（供远程连接模拟界面使用）
 		agentDescs := reg.ListDescriptors()
 		welcome := map[string]interface{}{
 			"method": "bridge/list",
@@ -306,7 +306,7 @@ func startAdminServer(port int, reg *agent.AgentRegistry, cfg *infra.Config) {
 				continue
 			}
 
-			// 处理 bridge/list — 返回 Bridge+Agent 列表（兼容 test_saas.html）
+			// 处理 bridge/list — 返回 Bridge+Agent 列表
 			if anpMsg.Method == "bridge/list" {
 				descs := reg.ListDescriptors()
 				result, _ := json.Marshal(map[string]interface{}{

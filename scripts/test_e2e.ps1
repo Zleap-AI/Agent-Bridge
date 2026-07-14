@@ -2,9 +2,9 @@
 # PowerShell 5+
 #
 # test_e2e.ps1
-# zleap-bridge 端到端综合测试脚本
+# Agent-Bridge 端到端综合测试脚本
 # 测试：Bridge Admin API、Admin WebSocket 链路
-# 连接 Bridge Admin（:9202），无需独立 SaaS 模拟器
+# 连接 Bridge Admin（:9202），无需独立远程服务模拟器
 #
 # Lzm 2026-07-13
 
@@ -36,7 +36,7 @@ function Get-Result {
 }
 
 Write-Host "============================================" -ForegroundColor Cyan
-Write-Host "  Zleap Bridge - 端到端综合测试" -ForegroundColor Cyan
+Write-Host "  Agent-Bridge - 端到端综合测试" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host ""
 

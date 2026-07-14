@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // codec.go
 // ACP 流式消息类型标准化编解码器
@@ -12,21 +12,21 @@ package protocol
 import (
 	"encoding/json"
 
-	"github.com/zleap/bridge/internal"
+	"github.com/Zleap-AI/Agent-Bridge/internal"
 )
 
 // sessionUpdate 名称常量（ACP 流式通知中的 sessionUpdate 字段值）
 const (
 	// 思考过程（各种 Agent 的变体命名）
-	SessionUpdateThought       = "agent_thought_chunk"
-	SessionUpdateThoughtAlt1   = "thought_chunk"
-	SessionUpdateThoughtAlt2   = "thinking_chunk"
+	SessionUpdateThought     = "agent_thought_chunk"
+	SessionUpdateThoughtAlt1 = "thought_chunk"
+	SessionUpdateThoughtAlt2 = "thinking_chunk"
 
 	// 响应文本（各种 Agent 的变体命名）
-	SessionUpdateResponse      = "agent_message_chunk"
-	SessionUpdateResponseAlt1  = "agent_response_chunk"
-	SessionUpdateResponseAlt2  = "message_chunk"
-	SessionUpdateResponseAlt3  = "content_chunk"
+	SessionUpdateResponse     = "agent_message_chunk"
+	SessionUpdateResponseAlt1 = "agent_response_chunk"
+	SessionUpdateResponseAlt2 = "message_chunk"
+	SessionUpdateResponseAlt3 = "content_chunk"
 )
 
 // ACPStreamUpdate 流式更新消息参数结构
@@ -42,7 +42,7 @@ type ACPStreamUpdate struct {
 // 格式：{"params": {"request_id": "...", "type": "response|final", "content": {"text": "..."}}}
 type CodexStreamUpdate struct {
 	RequestID string `json:"request_id"`
-	Type      string `json:"type"`      // "response" | "final"
+	Type      string `json:"type"` // "response" | "final"
 	Content   *struct {
 		Text string `json:"text"`
 	} `json:"content"`
@@ -76,8 +76,9 @@ func NormalizeStreamType(rawType string) internal.StreamChunkType {
 
 // ParseStreamChunk 从 ACP 流式更新消息中解析出统一的 StreamChunk
 // 兼容两种格式：
-//   1. Kimi 标准格式：params = {"update": {"sessionUpdate": "...", "content": {...}}}
-//   2. Codex codex-acp 格式：params = {"type": "response|final|error", "content": {"text": "..."}}
+//  1. Kimi 标准格式：params = {"update": {"sessionUpdate": "...", "content": {...}}}
+//  2. Codex codex-acp 格式：params = {"type": "response|final|error", "content": {"text": "..."}}
+//
 // Lzm 2026-07-10
 func ParseStreamChunk(msg *ACPMessage) (*internal.StreamChunk, error) {
 	if !msg.IsStreamUpdate() {

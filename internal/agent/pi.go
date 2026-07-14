@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // pi.go
 // pi coding agent (pi-acp) 实现
@@ -16,8 +16,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/zleap/bridge/internal"
-	"github.com/zleap/bridge/internal/protocol"
+	"github.com/Zleap-AI/Agent-Bridge/internal"
+	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
 )
 
 // PiAgent pi coding agent 实现（通过 pi-acp 适配器）

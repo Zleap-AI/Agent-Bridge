@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // message_parts.go
 // 标准化消息模型 — 借鉴 OpenViking 的四部件消息模型 (text/reasoning/tool/context)

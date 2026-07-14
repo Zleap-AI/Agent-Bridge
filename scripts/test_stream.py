@@ -2,7 +2,7 @@
 # Python 3.12+
 #
 # test_stream.py
-# 测试流式 Prompt 发送（带 _stream 后缀触发流式模式）
+# 测试显式开启流式模式的 Prompt 发送
 # 脚本统一管理在 scripts/ 目录下
 #
 # Lzm 2026-07-10
@@ -41,14 +41,15 @@ async def main():
             print("创建会话失败!")
             return
 
-        # 2. 发送流式 Prompt（ID 含 _stream 触发流式）
+        # 2. 发送流式 Prompt
         req2 = {
             "jsonrpc": "2.0",
-            "id": f"stream_test_prompt_{int(time.time()*1000)}_stream",
+            "id": f"stream_test_prompt_{int(time.time()*1000)}",
             "method": "invoke",
             "params": {
                 "agent_id": "kimi",
                 "method": "session/prompt",
+                "stream": True,
                 "params": {
                     "sessionId": session_id,
                     "prompt": [{"type": "text", "text": "你好，用中文一句话介绍你自己。"}]

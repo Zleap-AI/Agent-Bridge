@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // session.go
 // 会话管理器 — 管理 Agent 的 ACP 会话生命周期
@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/zleap/bridge/internal/agent"
+	"github.com/Zleap-AI/Agent-Bridge/internal/agent"
 )
 
 // SessionManager 管理所有 Agent 的 ACP 会话
@@ -48,7 +48,7 @@ type StoredSession struct {
 // NewSessionManager 创建会话管理器
 func NewSessionManager(registry *agent.AgentRegistry) *SessionManager {
 	home, _ := os.UserHomeDir()
-	storeDir := filepath.Join(home, ".zleap", "agents")
+	storeDir := filepath.Join(home, ".agent-bridge", "agents")
 
 	return &SessionManager{
 		registry: registry,

@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // registry_platform_windows.go
 // Windows 平台特有的 Agent 搜索路径和环境配置
@@ -24,9 +24,9 @@ func getExtraSearchPaths() []string {
 	return []string{
 		filepath.Join(home, "AppData", "Roaming", "npm"),
 		os.Getenv("APPDATA") + "\\npm",
-		filepath.Join(home, ".local", "bin"), // WSL/Cursor CLI 安装路径
-		filepath.Join(home, "AppData", "Local", "Cursor"), // Cursor Windows 路径
-		filepath.Join(home, "AppData", "Local", "cursor-agent"), // Cursor Agent CLI 安装路径
+		filepath.Join(home, ".local", "bin"),                             // WSL/Cursor CLI 安装路径
+		filepath.Join(home, "AppData", "Local", "Cursor"),                // Cursor Windows 路径
+		filepath.Join(home, "AppData", "Local", "cursor-agent"),          // Cursor Agent CLI 安装路径
 		filepath.Join(home, "AppData", "Local", "GitHub CLI", "copilot"), // Copilot CLI (gh extension) 安装路径
 	}
 }

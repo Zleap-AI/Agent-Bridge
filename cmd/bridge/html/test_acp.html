@@ -11,7 +11,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ACP 协议测试 - zleap-bridge</title>
+  <title>ACP 协议测试 - Agent-Bridge</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Segoe UI', -apple-system, sans-serif; background: #1a1b26; color: #cfcfe2; height: 100vh; display: flex; flex-direction: column; }
@@ -780,9 +780,9 @@
         }
 
         sendMessage({
-          id: 'invoke_prompt_' + Date.now() + '_stream',
+          id: 'invoke_prompt_' + Date.now(),
           method: 'invoke',
-          params: { agent_id: agentId, method: 'session/prompt', params: params }
+          params: { agent_id: agentId, method: 'session/prompt', params: params, stream: true }
         });
       }
 
