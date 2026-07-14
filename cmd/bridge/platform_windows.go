@@ -3,11 +3,19 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows/registry"
+)
+
+const (
+	userRunKey     = `Software\Microsoft\Windows\CurrentVersion\Run`
+	autostartValue = "Agent-Bridge"
 )
 
 var (
@@ -45,24 +53,28 @@ func ensureUserAutostart() error {
 		return fmt.Errorf("获取程序路径失败: %w", err)
 	}
 	command := fmt.Sprintf("\"%s\" --background", executable)
-	output, err := exec.Command(
-		"reg.exe", "add", `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
-		"/v", "Agent-Bridge", "/t", "REG_SZ", "/d", command, "/f",
-	).CombinedOutput()
+	key, _, err := registry.CreateKey(registry.CURRENT_USER, userRunKey, registry.SET_VALUE)
 	if err != nil {
-		return fmt.Errorf("写入用户启动项失败: %w: %s", err, output)
+		return fmt.Errorf("打开用户启动项失败: %w", err)
+	}
+	defer key.Close()
+	if err := key.SetStringValue(autostartValue, command); err != nil {
+		return fmt.Errorf("写入用户启动项失败: %w", err)
 	}
 	return nil
 }
 
 func removeUserAutostart() error {
-	key := `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
-	if err := exec.Command("reg.exe", "query", key, "/v", "Agent-Bridge").Run(); err != nil {
+	key, err := registry.OpenKey(registry.CURRENT_USER, userRunKey, registry.SET_VALUE)
+	if errors.Is(err, registry.ErrNotExist) {
 		return nil
 	}
-	output, err := exec.Command("reg.exe", "delete", key, "/v", "Agent-Bridge", "/f").CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("删除用户启动项失败: %w: %s", err, output)
+		return fmt.Errorf("打开用户启动项失败: %w", err)
+	}
+	defer key.Close()
+	if err := key.DeleteValue(autostartValue); err != nil && !errors.Is(err, registry.ErrNotExist) {
+		return fmt.Errorf("删除用户启动项失败: %w", err)
 	}
 	return nil
 }
