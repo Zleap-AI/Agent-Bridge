@@ -80,8 +80,14 @@ try {
         if ($process.HasExited) {
             Fail "Agent-Bridge Local exited before registering autostart"
         }
-        $registeredCommand = Get-ItemPropertyValue `
-            -Path $runKey -Name "Agent-Bridge" -ErrorAction SilentlyContinue
+        $runKeyItem = Get-Item -LiteralPath $runKey -ErrorAction SilentlyContinue
+        if ($null -ne $runKeyItem -and $runKeyItem.GetValueNames() -contains "Agent-Bridge") {
+            $registeredCommand = $runKeyItem.GetValue(
+                "Agent-Bridge",
+                $null,
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
+        }
         if ($null -ne $registeredCommand) {
             break
         }
