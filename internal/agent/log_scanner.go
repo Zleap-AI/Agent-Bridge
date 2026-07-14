@@ -12,12 +12,13 @@ package agent
 
 import (
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
-	"time"
 )
 
 // SessionRef 会话引用 — 对应 OpenViking 的 SessionRef
@@ -80,48 +81,26 @@ func ListScanners() []LogScanner {
 
 // --- 已知路径扫描（OpenViking 的 `default_paths()` 映射） ---
 
-// knownSessionDirs 各 Agent 的历史会话日志目录
-// Lzm 2026-07-10
-var knownSessionDirs = map[string][]string{
-	"kimi": {
-		filepath.Join(homeDir(), ".kimi-code", "sessions"),
-	},
-	"codex": {
-		filepath.Join(homeDir(), ".codex", "sessions"),
-	},
-	"claude-code": {
-		filepath.Join(homeDir(), ".claude", "projects"),
-	},
-	"opencode": {
-		filepath.Join(homeDir(), ".local", "share", "opencode"),
-	},
-	"gemini": {
-		filepath.Join(homeDir(), ".gemini", "sessions"),
-	},
-	"copilot": {
-		filepath.Join(homeDir(), ".copilot", "sessions"),
-	},
-	"pi": {
-		filepath.Join(homeDir(), ".pi", "agent", "sessions"),
-	},
-	"cursor": {
-		filepath.Join(homeDir(), ".cursor", "sessions"),
-	},
-	"glm": {
-		filepath.Join(homeDir(), ".local", "state", "glm-acp-agent", "sessions"),
-	},
-	"openclaw": {
-		filepath.Join(homeDir(), ".openclaw", "state"),
-	},
-}
-
-// homeDir 返回当前用户的 home 目录，跨平台兼容
-func homeDir() string {
+// knownSessionDirs returns each Agent's native history directories. Resolving
+// the home directory at call time works on macOS/Linux and Windows, and also
+// keeps tests and long-running processes from capturing stale environment data.
+func knownSessionDirs() map[string][]string {
 	home, err := os.UserHomeDir()
-	if err != nil {
-		return os.Getenv("HOME")
+	if err != nil || home == "" {
+		return map[string][]string{}
 	}
-	return home
+	return map[string][]string{
+		"kimi":        {filepath.Join(home, ".kimi-code", "sessions")},
+		"codex":       {filepath.Join(home, ".codex", "sessions")},
+		"claude-code": {filepath.Join(home, ".claude", "projects")},
+		"opencode":    {filepath.Join(home, ".local", "share", "opencode")},
+		"gemini":      {filepath.Join(home, ".gemini", "sessions")},
+		"copilot":     {filepath.Join(home, ".copilot", "sessions")},
+		"pi":          {filepath.Join(home, ".pi", "agent", "sessions")},
+		"cursor":      {filepath.Join(home, ".cursor", "sessions")},
+		"glm":         {filepath.Join(home, ".local", "state", "glm-acp-agent", "sessions")},
+		"openclaw":    {filepath.Join(home, ".openclaw", "state")},
+	}
 }
 
 // ScannerFromAgentID 根据 Agent ID 自动创建对应的 LogScanner
@@ -132,7 +111,7 @@ func ScannerFromAgentID(agentID string) LogScanner {
 		return s
 	}
 	// 退化为目录扫描器
-	dirs, ok := knownSessionDirs[agentID]
+	dirs, ok := knownSessionDirs()[agentID]
 	if !ok {
 		return nil
 	}
@@ -152,30 +131,50 @@ type dirScanner struct {
 	ext  string
 }
 
+var trailingUUID = regexp.MustCompile(`(?i)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$`)
+
 func (d *dirScanner) Name() string { return d.name }
 
 func (d *dirScanner) DiscoverSessions() ([]SessionRef, error) {
-	var sessions []SessionRef
+	byID := make(map[string]SessionRef)
 	for _, dir := range d.dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), d.ext) {
-				continue
+		err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil || entry.IsDir() || !strings.HasSuffix(entry.Name(), d.ext) {
+				return nil
 			}
-			path := filepath.Join(dir, e.Name())
-			info, _ := os.Stat(path)
-			sessions = append(sessions, SessionRef{
+			info, err := entry.Info()
+			if err != nil || !info.Mode().IsRegular() {
+				return nil
+			}
+			id := nativeSessionID(entry.Name(), d.ext)
+			candidate := SessionRef{
 				Harness:   d.name,
-				NativeID:  strings.TrimSuffix(e.Name(), d.ext),
+				NativeID:  id,
 				Locator:   path,
 				StartedAt: info.ModTime().Unix(),
-			})
+			}
+			if current, exists := byID[id]; !exists || candidate.StartedAt > current.StartedAt {
+				byID[id] = candidate
+			}
+			return nil
+		})
+		if err != nil && !os.IsNotExist(err) {
+			slog.Debug("扫描 Agent 历史目录失败", "agent", d.name, "dir", dir, "error", err)
 		}
 	}
+	sessions := make([]SessionRef, 0, len(byID))
+	for _, session := range byID {
+		sessions = append(sessions, session)
+	}
 	return sessions, nil
+}
+
+func nativeSessionID(name, ext string) string {
+	base := strings.TrimSuffix(name, ext)
+	if match := trailingUUID.FindStringSubmatch(base); len(match) == 2 {
+		return match[1]
+	}
+	return base
 }
 
 func (d *dirScanner) ReadMessages(ref SessionRef, cursor int, limit int) ([]string, int, error) {
@@ -189,7 +188,7 @@ func (d *dirScanner) ReadMessages(ref SessionRef, cursor int, limit int) ([]stri
 // Lzm 2026-07-10
 func DiscoverAgentHistoryDirs() map[string][]string {
 	result := make(map[string][]string)
-	for agentID, dirs := range knownSessionDirs {
+	for agentID, dirs := range knownSessionDirs() {
 		var found []string
 		for _, dir := range dirs {
 			if info, err := os.Stat(dir); err == nil && info.IsDir() {
@@ -232,20 +231,8 @@ func DiscoverHistoricalSessions(agentID string, limit int) ([]SessionRef, error)
 // DefaultLogScannerPaths 默认日志扫描路径（供配置使用）
 func DefaultLogScannerPaths() []string {
 	var paths []string
-	for _, dirs := range knownSessionDirs {
+	for _, dirs := range knownSessionDirs() {
 		paths = append(paths, dirs...)
 	}
 	return paths
-}
-
-// stringPtr 辅助函数
-func stringPtr(s string) *string { return &s }
-
-// int64Ptr 辅助函数
-func int64Ptr(i int64) *int64 { return &i }
-
-// init 初始化 — 注册已知 Agent 的默认 Scanner（如果有）
-func init() {
-	// 注册系统时间计算
-	_ = time.Now
 }

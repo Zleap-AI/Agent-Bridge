@@ -40,36 +40,15 @@ func NewKimiAgent(meta AgentMeta) *KimiAgent {
 
 // Start 启动 Kimi 进程并完成 ACP 握手
 // Kimi 使用内置 ACP 支持，直接启动进程即可
-// 注意：必须使用父 ctx 启动进程（非 timeout ctx），否则 Start 返回后进程被杀死
+// 进程生命周期由 Stop 管理，ctx 只约束启动与握手
 // Lzm 2026-07-10
 func (a *KimiAgent) Start(ctx context.Context) error {
-	if a.Status() != AgentDisconnected {
-		return fmt.Errorf("agent %s 已启动，当前状态: %s", a.meta.ID, a.Status())
-	}
-
-	// 预创建会话目录，避免 Kimi 的 EPERM 问题
-	if err := a.prepareDirs(); err != nil {
-		return fmt.Errorf("准备 Kimi 目录失败: %w", err)
-	}
-
-	// 1. 启动子进程（使用父 ctx，进程需要长期运行，不可被 Start 的 timeout 控制）
-	if err := a.startProcess(ctx); err != nil {
-		return err
-	}
-
-	// 2. 启动后台读取协程
-	a.startReadLoop(ctx)
-
-	// 3. ACP 握手（握手阶段使用 timeout，防止卡死）
-	startCtx, cancel := context.WithTimeout(ctx, a.meta.StartupTimeout)
-	defer cancel()
-	if err := a.doHandshake(startCtx); err != nil {
-		a.Stop(ctx)
-		return err
-	}
-
-	a.setStatus(AgentIdle)
-	return nil
+	return a.start(ctx, func() error {
+		if err := a.prepareDirs(); err != nil {
+			return fmt.Errorf("准备 Kimi 目录失败: %w", err)
+		}
+		return nil
+	})
 }
 
 // prepareDirs 预创建 Kimi 可能需要的目录并授予权限（规避 Windows EPERM）

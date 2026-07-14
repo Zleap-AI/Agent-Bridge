@@ -14,11 +14,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/Zleap-AI/Agent-Bridge/internal"
 	"github.com/Zleap-AI/Agent-Bridge/internal/agent"
 	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
+)
+
+const (
+	// MaxStreamOutputBytes bounds the combined reasoning and response text kept
+	// in memory and persisted for one streamed Agent call. With JSON's maximum
+	// string escaping expansion, one forwarded chunk remains below the ANP
+	// Device-message limit.
+	MaxStreamOutputBytes = 2 * 1024 * 1024
+	maxSessionsPerAgent  = 50
+	maxMessageRoleBytes  = 32
 )
 
 // RequestRouter ANP 消息路由器
@@ -57,7 +68,7 @@ func (r *RequestRouter) Route(ctx context.Context, msg *protocol.ANPMessage, ses
 	case msg.Method == "sessions/list":
 		return r.handleSessionsList(msg, sessionMgr)
 	case msg.Method == "sessions/messages":
-		return r.HandleSessionMessages(msg, sessionMgr)
+		return r.handleSessionMessages(ctx, msg, sessionMgr)
 	case msg.Method == "invoke":
 		return r.handleInvoke(ctx, msg, sessionMgr)
 	default:
@@ -70,6 +81,47 @@ func (r *RequestRouter) handlePing(msg *protocol.ANPMessage) *protocol.ANPMessag
 	return protocol.NewResultResponse(msg.ID, json.RawMessage(`"pong"`))
 }
 
+type sessionListItem struct {
+	AgentID      string `json:"agent_id"`
+	SessionID    string `json:"session_id"`
+	MessageCount int    `json:"message_count,omitempty"`
+	UpdatedAt    int64  `json:"updated_at,omitempty"`
+}
+
+func buildSessionListResponse(requestID string, items []sessionListItem) *protocol.ANPMessage {
+	emptyItems := make([]sessionListItem, 0)
+	emptyResult, _ := json.Marshal(emptyItems)
+	emptyResponse := protocol.NewResultResponse(requestID, emptyResult)
+	emptyWire, err := json.Marshal(emptyResponse)
+	if err != nil {
+		return protocol.NewErrorResponse(requestID, -32603, "Session list cannot be encoded")
+	}
+	encodedItemsBytes := 0
+	for index, item := range items {
+		if len(item.AgentID)+len(item.SessionID) > MaxStreamOutputBytes {
+			return sessionListTooLarge(requestID)
+		}
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			return protocol.NewErrorResponse(requestID, -32603, "Session list item cannot be encoded")
+		}
+		encodedItemsBytes += len(encoded)
+		if index > 0 {
+			encodedItemsBytes++
+		}
+		if len(emptyWire)+encodedItemsBytes > protocol.MaxANPDeviceMessageBytes {
+			return sessionListTooLarge(requestID)
+		}
+	}
+	result, _ := json.Marshal(items)
+	return protocol.NewResultResponse(requestID, result)
+}
+
+func sessionListTooLarge(requestID string) *protocol.ANPMessage {
+	return protocol.NewErrorResponse(requestID, protocol.ANPErrorResponseTooLarge,
+		fmt.Sprintf("Session list exceeds the %d-byte Device response limit; filter by agent_id", protocol.MaxANPDeviceMessageBytes))
+}
+
 // handleSessionsList 处理会话列表查询
 // 支持 agent_id 过滤，返回历史会话列表（含消息数）
 // Lzm 2026-07-10
@@ -79,64 +131,91 @@ func (r *RequestRouter) handleSessionsList(msg *protocol.ANPMessage, sessionMgr 
 	}
 	json.Unmarshal(msg.Params, &filter)
 
-	type responseItem struct {
-		AgentID      string `json:"agent_id"`
-		SessionID    string `json:"session_id"`
-		MessageCount int    `json:"message_count,omitempty"`
-		UpdatedAt    int64  `json:"updated_at,omitempty"`
+	if filter.AgentID != "" {
+		return buildSessionListResponse(msg.ID, listAgentSessions(filter.AgentID, sessionMgr))
 	}
 
-	var items []responseItem
+	agentIDs := make(map[string]struct{})
+	for agentID := range sessionMgr.ListAllSessions() {
+		agentIDs[agentID] = struct{}{}
+	}
+	for _, agentID := range r.registry.IDs() {
+		agentIDs[agentID] = struct{}{}
+	}
+	orderedAgentIDs := make([]string, 0, len(agentIDs))
+	for agentID := range agentIDs {
+		orderedAgentIDs = append(orderedAgentIDs, agentID)
+	}
+	sort.Strings(orderedAgentIDs)
 
-	if filter.AgentID != "" {
-		// 查询指定 Agent 的历史会话
-		sessions := sessionMgr.ListSessions(filter.AgentID, 50)
-		for _, s := range sessions {
-			items = append(items, responseItem{
-				AgentID:      filter.AgentID,
-				SessionID:    s.SessionID,
-				MessageCount: s.MessageCount,
-				UpdatedAt:    s.UpdatedAt,
-			})
+	items := make([]sessionListItem, 0)
+	for _, agentID := range orderedAgentIDs {
+		items = append(items, listAgentSessions(agentID, sessionMgr)...)
+	}
+	return buildSessionListResponse(msg.ID, items)
+}
+
+func listAgentSessions(agentID string, sessionMgr *SessionManager) []sessionListItem {
+	byID := make(map[string]sessionListItem)
+	add := func(item sessionListItem) {
+		if item.SessionID == "" {
+			return
 		}
-		// 同时包含当前活跃会话
-		if sid := sessionMgr.GetSession(filter.AgentID); sid != "" {
-			items = append(items, responseItem{
-				AgentID:   filter.AgentID,
-				SessionID: sid,
-			})
+		if current, exists := byID[item.SessionID]; exists {
+			if item.MessageCount > current.MessageCount {
+				current.MessageCount = item.MessageCount
+			}
+			if item.UpdatedAt > current.UpdatedAt {
+				current.UpdatedAt = item.UpdatedAt
+			}
+			byID[item.SessionID] = current
+			return
+		}
+		byID[item.SessionID] = item
+	}
+
+	for _, session := range sessionMgr.ListSessions(agentID, maxSessionsPerAgent) {
+		add(sessionListItem{
+			AgentID:      agentID,
+			SessionID:    session.SessionID,
+			MessageCount: session.MessageCount,
+			UpdatedAt:    session.UpdatedAt,
+		})
+	}
+	if nativeSessions, err := agent.DiscoverHistoricalSessions(agentID, maxSessionsPerAgent); err == nil {
+		for _, session := range nativeSessions {
+			add(sessionListItem{AgentID: agentID, SessionID: session.NativeID, UpdatedAt: session.StartedAt})
 		}
 	} else {
-		// 查询所有 Agent 的会话
-		all := sessionMgr.ListAllSessions()
-		for agentID, sessions := range all {
-			for _, s := range sessions {
-				items = append(items, responseItem{
-					AgentID:      agentID,
-					SessionID:    s.SessionID,
-					MessageCount: s.MessageCount,
-					UpdatedAt:    s.UpdatedAt,
-				})
-			}
+		slog.Debug("未扫描到 Agent 原生 Session", "agent", agentID, "error", err)
+	}
+	activeSessionID := sessionMgr.GetSession(agentID)
+	add(sessionListItem{AgentID: agentID, SessionID: activeSessionID})
+
+	items := make([]sessionListItem, 0, len(byID))
+	for _, item := range byID {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].UpdatedAt == items[j].UpdatedAt {
+			return items[i].SessionID < items[j].SessionID
 		}
-		// 也包含活跃会话
-		for _, agentID := range r.registry.IDs() {
-			if sid := sessionMgr.GetSession(agentID); sid != "" {
-				items = append(items, responseItem{
-					AgentID:   agentID,
-					SessionID: sid,
-				})
-			}
+		return items[i].UpdatedAt > items[j].UpdatedAt
+	})
+	if len(items) <= maxSessionsPerAgent {
+		return items
+	}
+	items = items[:maxSessionsPerAgent]
+	if activeSessionID == "" {
+		return items
+	}
+	for _, item := range items {
+		if item.SessionID == activeSessionID {
+			return items
 		}
 	}
-
-	// 确保 nil → [] 避免 JSON 输出 null
-	if items == nil {
-		items = make([]responseItem, 0)
-	}
-
-	result, _ := json.Marshal(items)
-	return protocol.NewResultResponse(msg.ID, result)
+	items[len(items)-1] = byID[activeSessionID]
+	return items
 }
 
 // handleInvoke 处理 invoke 请求 — 将请求转发到指定 Agent
@@ -156,12 +235,12 @@ func (r *RequestRouter) handleInvoke(ctx context.Context, msg *protocol.ANPMessa
 			fmt.Sprintf("未知 Agent: %s", params.AgentID))
 	}
 
-	// 确保 Agent 已启动
-	if a.Status() == agent.AgentDisconnected {
-		if err := a.Start(ctx); err != nil {
-			return protocol.NewErrorResponse(msg.ID, -31002,
-				fmt.Sprintf("启动 Agent %s 失败: %v", params.AgentID, err))
-		}
+	// 确保 Agent 已启动。SessionManager 的内存状态可能跨过一次 Agent
+	// 子进程重启，因此后续显式 Session 调用需要强制重新加载。
+	agentRestarted, err := ensureAgentStarted(ctx, a)
+	if err != nil {
+		return protocol.NewErrorResponse(msg.ID, -31002,
+			fmt.Sprintf("启动 Agent %s 失败: %v", params.AgentID, err))
 	}
 
 	// 根据请求的方法分发
@@ -171,7 +250,7 @@ func (r *RequestRouter) handleInvoke(ctx context.Context, msg *protocol.ANPMessa
 	case "session/load":
 		return r.handleInvokeSessionLoad(ctx, msg, a, params.Params, sessionMgr)
 	case "session/prompt":
-		return r.handleInvokeSessionPrompt(ctx, msg, a, params.Params, params.Stream, sessionMgr)
+		return r.handleInvokeSessionPrompt(ctx, msg, a, params.Params, params.Stream, agentRestarted, sessionMgr)
 	default:
 		return protocol.NewErrorResponse(msg.ID, -31003,
 			fmt.Sprintf("Agent %s 不支持方法: %s", params.AgentID, params.Method))
@@ -180,7 +259,7 @@ func (r *RequestRouter) handleInvoke(ctx context.Context, msg *protocol.ANPMessa
 
 // handleInvokeSessionNew 处理创建会话的 invoke 请求
 func (r *RequestRouter) handleInvokeSessionNew(ctx context.Context, msg *protocol.ANPMessage, a agent.Agent, sessionMgr *SessionManager) *protocol.ANPMessage {
-	sid, err := sessionMgr.GetOrCreateSession(ctx, a.ID())
+	sid, err := sessionMgr.CreateNewSession(ctx, a.ID())
 	if err != nil {
 		return protocol.NewErrorResponse(msg.ID, -31004,
 			fmt.Sprintf("创建会话失败: %v", err))
@@ -204,33 +283,68 @@ func (r *RequestRouter) handleInvokeSessionLoad(ctx context.Context, msg *protoc
 			fmt.Sprintf("解析 session/load 参数失败: %v", err))
 	}
 
-	if err := a.LoadSession(ctx, loadParams.SessionID); err != nil {
+	if _, err := NewSessionLoadReplayer(r.registry, sessionMgr.msgStore).LoadAndSaveSession(ctx, a.ID(), loadParams.SessionID); err != nil {
 		return protocol.NewErrorResponse(msg.ID, -31005,
 			fmt.Sprintf("加载会话 %s 失败: %v", loadParams.SessionID, err))
 	}
 
-	// 记录到会话管理器
-	sessionMgr.GetOrCreateSession(ctx, a.ID()) // 会跳过已记录的
+	// 记录显式加载的会话，不触发恢复或创建其他会话。
+	sessionMgr.ActivateSession(a.ID(), loadParams.SessionID)
 
-	// 加载本地持久化的历史消息
 	messages := sessionMgr.LoadMessages(a.ID(), loadParams.SessionID)
 	if messages == nil {
 		messages = []StoredMessage{}
 	}
+	return buildSessionLoadResponse(msg.ID, loadParams.SessionID, messages)
+}
 
-	result, _ := json.Marshal(map[string]interface{}{
-		"status":    "ok",
-		"sessionId": loadParams.SessionID,
-		"messages":  messages,
-	})
-	return protocol.NewResultResponse(msg.ID, result)
+type sessionLoadResult struct {
+	Status    string          `json:"status"`
+	SessionID string          `json:"sessionId"`
+	Messages  []StoredMessage `json:"messages"`
+}
+
+func buildSessionLoadResponse(requestID, sessionID string, messages []StoredMessage) *protocol.ANPMessage {
+	empty := newSessionLoadResponse(requestID, sessionID, messages[:0])
+	emptyWire, err := json.Marshal(empty)
+	if err != nil {
+		return protocol.NewErrorResponse(requestID, -32603, "session/load response cannot be encoded")
+	}
+	encodedMessagesBytes := 0
+	for index, message := range messages {
+		if len(message.Role) > maxMessageRoleBytes || len(message.Text) > protocol.MaxANPDeviceMessageBytes {
+			return sessionLoadTooLarge(requestID, index)
+		}
+		encoded, err := json.Marshal(message)
+		if err != nil {
+			return protocol.NewErrorResponse(requestID, -32603, "session/load Message cannot be encoded")
+		}
+		encodedMessagesBytes += len(encoded)
+		if index > 0 {
+			encodedMessagesBytes++
+		}
+		if len(emptyWire)+encodedMessagesBytes > protocol.MaxANPDeviceMessageBytes {
+			return sessionLoadTooLarge(requestID, index)
+		}
+	}
+	return newSessionLoadResponse(requestID, sessionID, messages)
+}
+
+func newSessionLoadResponse(requestID, sessionID string, messages []StoredMessage) *protocol.ANPMessage {
+	result, _ := json.Marshal(sessionLoadResult{Status: "ok", SessionID: sessionID, Messages: messages})
+	return protocol.NewResultResponse(requestID, result)
+}
+
+func sessionLoadTooLarge(requestID string, messageIndex int) *protocol.ANPMessage {
+	return protocol.NewErrorResponse(requestID, protocol.ANPErrorResponseTooLarge,
+		fmt.Sprintf("session/load history exceeds the %d-byte Device response limit at Message %d; use sessions/messages cursor pagination", protocol.MaxANPDeviceMessageBytes, messageIndex))
 }
 
 // handleInvokeSessionPrompt 处理 prompt 请求 — 最核心的交互
 // 远程服务发来 prompt，Bridge 转发到 Agent，流式回传结果
 // 支持：消息自动持久化、流式推送、EPERM/Session失效重试
 // Lzm 2026-07-10
-func (r *RequestRouter) handleInvokeSessionPrompt(ctx context.Context, msg *protocol.ANPMessage, a agent.Agent, params json.RawMessage, stream bool, sessionMgr *SessionManager) *protocol.ANPMessage {
+func (r *RequestRouter) handleInvokeSessionPrompt(ctx context.Context, msg *protocol.ANPMessage, a agent.Agent, params json.RawMessage, stream, agentRestarted bool, sessionMgr *SessionManager) *protocol.ANPMessage {
 	// 解析 prompt 参数
 	var promptParams struct {
 		SessionID string `json:"sessionId"`
@@ -256,12 +370,29 @@ func (r *RequestRouter) handleInvokeSessionPrompt(ctx context.Context, msg *prot
 	sessionID := promptParams.SessionID
 	agentID := a.ID()
 	if sessionID == "" {
+		// Old/internal callers may omit sessionId. The in-memory Session belongs
+		// to the previous process generation after a restart, so invalidate it and
+		// let GetOrCreateSession restore the persisted Session (or create a fresh
+		// one when the Agent reports that the old Session has expired).
+		if agentRestarted {
+			sessionMgr.ReleaseSession(agentID)
+		}
+
 		var err error
 		sessionID, err = sessionMgr.GetOrCreateSession(ctx, agentID)
 		if err != nil {
 			return protocol.NewErrorResponse(msg.ID, -31006,
 				fmt.Sprintf("获取会话失败: %v", err))
 		}
+	} else if agentRestarted || sessionMgr.GetSession(agentID) != sessionID {
+		// A selected historical Session must be restored before its next Message.
+		// Keeping this rule in the Router covers both Consoles and every Caller API
+		// client, without requiring callers to know ACP's session/load ordering.
+		if err := a.LoadSession(ctx, sessionID); err != nil {
+			return protocol.NewErrorResponse(msg.ID, -31005,
+				fmt.Sprintf("加载会话 %s 失败: %v", sessionID, err))
+		}
+		sessionMgr.ActivateSession(agentID, sessionID)
 	}
 
 	isStream := wantsStreaming(stream, msg.ID)
@@ -282,6 +413,28 @@ func wantsStreaming(explicit bool, requestID string) bool {
 	return strings.Contains(requestID, "_stream") || strings.Contains(requestID, "_bridge")
 }
 
+func isInvalidSessionStreamError(chunk internal.StreamChunk) bool {
+	message := chunk.Text
+	if message == "" && chunk.Error != nil {
+		message = chunk.Error.Message
+	}
+	message = strings.ToLower(message)
+	for _, marker := range []string{
+		"invalid session",
+		"session invalid",
+		"session not found",
+		"unknown session",
+		"session expired",
+		"session does not exist",
+		"no such session",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // streamPrompt 流式 prompt 处理 — 推送流式块 + 自动保存消息
 // Lzm 2026-07-10
 func (r *RequestRouter) streamPrompt(ctx context.Context, msg *protocol.ANPMessage, a agent.Agent, agentID, sessionID, userText string, sessionMgr *SessionManager) *protocol.ANPMessage {
@@ -295,125 +448,154 @@ func (r *RequestRouter) streamPrompt(ctx context.Context, msg *protocol.ANPMessa
 	}
 
 	if r.streamCB == nil {
-		slog.Warn("流式回调未设置，无法推送流式结果")
-		return nil
+		slog.Warn("流式回调未设置，结果将仅保存到本地会话")
 	}
 
 	// 在后台读取流式块，收集消息用于持久化
 	go func() {
 		var thoughtParts, responseParts []string
-		retrySession := false
-
-		// 检查第一个块，如果是 session 错误则自动重试
-		select {
-		case firstChunk, ok := <-chunkCh:
-			if !ok {
+		streamOutputBytes := 0
+		outputLimitExceeded := false
+		forwarding := r.streamCB != nil
+		forward := func(chunkType, chunkText string) {
+			if !forwarding {
 				return
 			}
-			// 如果第一个块是 error 类型，说明 session 失效，自动重试
-			if firstChunk.Type == internal.StreamChunkError || firstChunk.Type.String() == "error" {
-				slog.Warn("Session 失效，自动创建新会话重试",
-					"agent", agentID, "old_session", sessionID,
+			if err := r.streamCB(msg.ID, chunkType, chunkText); err != nil {
+				forwarding = false
+				slog.Warn("流式连接已断开，继续在本地完成调用",
+					"request_id", msg.ID,
+					"error", err,
 				)
-				retrySession = true
-				// 通知前端 session 已失效
-				r.streamCB(msg.ID, "session_invalid", sessionID)
-
-				// 创建新会话并重试
-				if newSID, err := sessionMgr.GetOrCreateSession(ctx, agentID); err == nil {
-					sessionID = newSID
-					// 通知前端新 session ID
-					r.streamCB(msg.ID, "session_refreshed", newSID)
-
-					acpReq = r.buildACPPromptReq(msg.ID, sessionID, userText)
-					var retryErr error
-					chunkCh, retryErr = a.Stream(ctx, acpReq)
-					if retryErr != nil {
-						r.streamCB(msg.ID, "error", "重试失败: "+retryErr.Error())
-						if r.finalResponseCB != nil {
-							r.finalResponseCB(msg.ID, nil, "重试失败: "+retryErr.Error())
-						}
-						return
-					}
-				} else {
-					r.streamCB(msg.ID, "error", "创建新会话失败: "+err.Error())
+			}
+		}
+		handleChunk := func(chunk internal.StreamChunk) bool {
+			if outputLimitExceeded {
+				// Keep draining the Agent stream so its producer cannot block after
+				// the request has already failed at the output boundary.
+				return true
+			}
+			chunkType := chunk.Type.String()
+			chunkText := chunk.Text
+			if chunk.Type == internal.StreamChunkError || chunkType == "error" {
+				if chunkText == "" && chunk.Error != nil {
+					chunkText = chunk.Error.Message
+				}
+				if chunkText == "" {
+					chunkText = "Agent 流式调用失败"
+				}
+				r.persistPromptMessages(sessionMgr, agentID, sessionID, userText, thoughtParts, responseParts)
+				forward("error", chunkText)
+				if r.finalResponseCB != nil {
+					r.finalResponseCB(msg.ID, nil, &protocol.ANPError{Code: -31008, Message: chunkText})
+				}
+				return false
+			}
+			if chunk.Type == internal.StreamChunkFinal && len(responseParts) != 0 {
+				// Some adapters repeat the complete response in final after already
+				// sending deltas. It is neither forwarded nor counted twice.
+				chunkText = ""
+			}
+			if chunk.Type == internal.StreamChunkThought || chunk.Type == internal.StreamChunkResponse || chunk.Type == internal.StreamChunkFinal {
+				if len(chunkText) > MaxStreamOutputBytes-streamOutputBytes {
+					message := fmt.Sprintf("Agent output exceeded the %d-byte limit", MaxStreamOutputBytes)
+					r.persistPromptMessages(sessionMgr, agentID, sessionID, userText, thoughtParts, responseParts)
 					if r.finalResponseCB != nil {
-						r.finalResponseCB(msg.ID, nil, "创建新会话失败: "+err.Error())
+						r.finalResponseCB(msg.ID, nil, &protocol.ANPError{Code: protocol.ANPErrorResponseTooLarge, Message: message})
+					} else {
+						// Legacy stream-only integrations have no structured completion
+						// channel, so retain their explicit error update fallback.
+						forward("error", message)
+					}
+					outputLimitExceeded = true
+					return true
+				}
+				streamOutputBytes += len(chunkText)
+			}
+			switch chunk.Type {
+			case internal.StreamChunkThought:
+				thoughtParts = append(thoughtParts, chunkText)
+			case internal.StreamChunkResponse:
+				responseParts = append(responseParts, chunkText)
+			case internal.StreamChunkFinal:
+				if len(responseParts) == 0 && chunkText != "" {
+					responseParts = append(responseParts, chunkText)
+				}
+			}
+			forward(chunkType, chunkText)
+			return true
+		}
+
+		// 检查第一个块，如果是 session 错误则自动重试
+		firstChunk, ok := <-chunkCh
+		if !ok {
+			r.finalizeStream(sessionMgr, agentID, sessionID, userText, thoughtParts, responseParts, msg.ID)
+			return
+		}
+		// 仅明确的 Session 失效错误可以安全地创建新会话重试。
+		// 认证、限流、模型错误等不得重复执行 prompt。
+		if (firstChunk.Type == internal.StreamChunkError || firstChunk.Type.String() == "error") && isInvalidSessionStreamError(firstChunk) {
+			slog.Warn("Session 失效，自动创建新会话重试",
+				"agent", agentID, "old_session", sessionID,
+			)
+			// 通知前端 session 已失效
+			forward("session_invalid", sessionID)
+
+			// 创建新会话并重试
+			if newSID, err := sessionMgr.CreateNewSession(ctx, agentID); err == nil {
+				sessionID = newSID
+				// 通知前端新 session ID
+				forward("session_refreshed", newSID)
+
+				acpReq = r.buildACPPromptReq(msg.ID, sessionID, userText)
+				var retryErr error
+				chunkCh, retryErr = a.Stream(ctx, acpReq)
+				if retryErr != nil {
+					forward("error", "重试失败: "+retryErr.Error())
+					if r.finalResponseCB != nil {
+						r.finalResponseCB(msg.ID, nil, &protocol.ANPError{Code: -31008, Message: "重试失败: " + retryErr.Error()})
 					}
 					return
 				}
 			} else {
-				// 第一个块正常，处理它
-				chunkType := firstChunk.Type.String()
-				chunkText := firstChunk.Text
-				switch firstChunk.Type {
-				case internal.StreamChunkThought:
-					thoughtParts = append(thoughtParts, chunkText)
-				case internal.StreamChunkResponse:
-					responseParts = append(responseParts, chunkText)
+				forward("error", "创建新会话失败: "+err.Error())
+				if r.finalResponseCB != nil {
+					r.finalResponseCB(msg.ID, nil, &protocol.ANPError{Code: -31008, Message: "创建新会话失败: " + err.Error()})
 				}
-				r.streamCB(msg.ID, chunkType, chunkText)
+				return
 			}
-		case <-ctx.Done():
-			slog.Warn("流式上下文取消", "request_id", msg.ID)
+		} else {
+			if !handleChunk(firstChunk) {
+				return
+			}
+		}
+
+		for chunk := range chunkCh {
+			if !handleChunk(chunk) {
+				return
+			}
+		}
+		if outputLimitExceeded {
 			return
 		}
 
-		if !retrySession {
-			// 继续消费剩余块
-			for chunk := range chunkCh {
-				chunkType := chunk.Type.String()
-				chunkText := chunk.Text
-
-				switch chunk.Type {
-				case internal.StreamChunkThought:
-					thoughtParts = append(thoughtParts, chunkText)
-				case internal.StreamChunkResponse:
-					responseParts = append(responseParts, chunkText)
-				}
-
-				if err := r.streamCB(msg.ID, chunkType, chunkText); err != nil {
-					slog.Error("流式推送失败", "request_id", msg.ID, "error", err)
-					return
-				}
-			}
-		} else {
-			// 消费重试的块
-			for chunk := range chunkCh {
-				chunkType := chunk.Type.String()
-				chunkText := chunk.Text
-
-				switch chunk.Type {
-				case internal.StreamChunkThought:
-					thoughtParts = append(thoughtParts, chunkText)
-				case internal.StreamChunkResponse:
-					responseParts = append(responseParts, chunkText)
-				}
-
-				if err := r.streamCB(msg.ID, chunkType, chunkText); err != nil {
-					slog.Error("流式推送失败", "request_id", msg.ID, "error", err)
-					return
-				}
-			}
-		}
-
-		// 流式完成后，自动保存消息
-		r.persistPromptMessages(sessionMgr, agentID, sessionID, userText, thoughtParts, responseParts)
-
-		// 发送 invoke 最终响应（告知远程服务调用完成）
-		if r.finalResponseCB != nil {
-			fullText := strings.Join(responseParts, "")
-			if fullText != "" {
-				resultBytes, _ := json.Marshal(map[string]string{"text": fullText})
-				r.finalResponseCB(msg.ID, resultBytes, "")
-			} else {
-				r.finalResponseCB(msg.ID, nil, "")
-			}
-		}
+		r.finalizeStream(sessionMgr, agentID, sessionID, userText, thoughtParts, responseParts, msg.ID)
 	}()
 
 	// 流式模式返回 nil，结果通过回调推送
 	return nil
+}
+
+func (r *RequestRouter) finalizeStream(sessionMgr *SessionManager, agentID, sessionID, userText string, thoughtParts, responseParts []string, requestID string) {
+	r.persistPromptMessages(sessionMgr, agentID, sessionID, userText, thoughtParts, responseParts)
+	if r.finalResponseCB == nil {
+		return
+	}
+	result := json.RawMessage(`{}`)
+	if fullText := strings.Join(responseParts, ""); fullText != "" {
+		result, _ = json.Marshal(map[string]string{"text": fullText})
+	}
+	r.finalResponseCB(requestID, result, nil)
 }
 
 // blockingPrompt 非流式 prompt 处理 — 等待完整响应 + 自动保存消息
@@ -483,7 +665,7 @@ func (r *RequestRouter) persistPromptMessages(sessionMgr *SessionManager, agentI
 		sessionMgr.SaveMessages(agentID, sessionID, messages)
 		slog.Debug("流式消息已自动保存",
 			"agent", agentID,
-			"session", sessionID[:16]+"...",
+			"session", truncateString(sessionID, 16),
 			"messages", len(messages),
 		)
 	}
@@ -515,11 +697,11 @@ func (r *RequestRouter) persistResponseMessage(sessionMgr *SessionManager, agent
 	}
 }
 
-// HandleSessionMessages 处理会话消息查询（WebSocket API）
+// handleSessionMessages 处理会话消息查询（WebSocket API）
 // 请求：{id, method:"sessions/messages", params:{agent_id, session_id, cursor?, limit?}}
 // 响应：{id, result:{messages: [{role, text}, ...], total, cursor}}
 // Lzm 2026-07-10
-func (r *RequestRouter) HandleSessionMessages(msg *protocol.ANPMessage, sessionMgr *SessionManager) *protocol.ANPMessage {
+func (r *RequestRouter) handleSessionMessages(ctx context.Context, msg *protocol.ANPMessage, sessionMgr *SessionManager) *protocol.ANPMessage {
 	var params struct {
 		AgentID   string `json:"agent_id"`
 		SessionID string `json:"session_id"`
@@ -534,19 +716,30 @@ func (r *RequestRouter) HandleSessionMessages(msg *protocol.ANPMessage, sessionM
 	if params.AgentID == "" || params.SessionID == "" {
 		return protocol.NewErrorResponse(msg.ID, -32602, "缺少 agent_id 或 session_id")
 	}
+	if params.Cursor < 0 {
+		return protocol.NewErrorResponse(msg.ID, -32602, "cursor 不能小于 0")
+	}
 
-	// 加载消息
+	// 加载消息。已持久化的空 Session 是合法的；只有本地无任何记录时
+	// 才向 Agent 验证 Session，避免把“空历史”误报为不存在。
 	messages := sessionMgr.LoadMessages(params.AgentID, params.SessionID)
-	if messages == nil {
-		// 尝试通过 ACP 加载
+	if messages == nil && !sessionMgr.SessionExists(params.AgentID, params.SessionID) {
 		a := r.registry.Get(params.AgentID)
-		if a != nil {
-			ctx := context.Background()
-			if err := a.LoadSession(ctx, params.SessionID); err == nil {
-				// 重新读取（ACP 可能已将消息写入文件）
-				messages = sessionMgr.LoadMessages(params.AgentID, params.SessionID)
-			}
+		if a == nil {
+			return protocol.NewErrorResponse(msg.ID, -31001,
+				fmt.Sprintf("未知 Agent: %s", params.AgentID))
 		}
+		if _, err := ensureAgentStarted(ctx, a); err != nil {
+			return protocol.NewErrorResponse(msg.ID, -31002,
+				fmt.Sprintf("启动 Agent %s 失败: %v", params.AgentID, err))
+		}
+		if _, err := NewSessionLoadReplayer(r.registry, sessionMgr.msgStore).LoadAndSaveSession(ctx, params.AgentID, params.SessionID); err != nil {
+			return protocol.NewErrorResponse(msg.ID, -31005,
+				fmt.Sprintf("加载会话 %s 失败: %v", params.SessionID, err))
+		}
+		sessionMgr.ActivateSession(params.AgentID, params.SessionID)
+		// ACP 回放可能已将消息持久化；空 Session 仍返回空数组。
+		messages = sessionMgr.LoadMessages(params.AgentID, params.SessionID)
 	}
 
 	if messages == nil {
@@ -563,18 +756,84 @@ func (r *RequestRouter) HandleSessionMessages(msg *protocol.ANPMessage, sessionM
 	if start >= total {
 		start = total
 	}
-	end := start + limit
-	if end > total {
-		end = total
+	end := total
+	if limit < total-start {
+		end = start + limit
 	}
 
-	result, _ := json.Marshal(map[string]interface{}{
-		"messages": messages[start:end],
-		"total":    total,
-		"cursor":   end,
-	})
+	return buildSessionMessagesResponse(msg.ID, messages, total, start, end)
+}
 
-	return protocol.NewResultResponse(msg.ID, result)
+type sessionMessagesPage struct {
+	Messages []StoredMessage `json:"messages"`
+	Total    int             `json:"total"`
+	Cursor   int             `json:"cursor"`
+}
+
+// buildSessionMessagesResponse returns the largest cursor page whose actual
+// JSON-RPC wire encoding fits the Device-to-Server frame contract. Callers
+// continue from the returned cursor, so reducing a page never loses messages.
+func buildSessionMessagesResponse(requestID string, messages []StoredMessage, total, start, end int) *protocol.ANPMessage {
+	bestEnd := start
+	encodedMessagesBytes := 0
+	failureMessage := ""
+	for index := start; index < end; index++ {
+		message := messages[index]
+		if len(message.Role) > maxMessageRoleBytes {
+			failureMessage = fmt.Sprintf("Message at cursor %d has a role exceeding %d bytes", index, maxMessageRoleBytes)
+			break
+		}
+		if len(message.Text) > protocol.MaxANPDeviceMessageBytes {
+			failureMessage = fmt.Sprintf("Message at cursor %d exceeds the %d-byte raw Message limit", index, protocol.MaxANPDeviceMessageBytes)
+			break
+		}
+		encodedMessage, err := json.Marshal(message)
+		if err != nil {
+			failureMessage = fmt.Sprintf("Message at cursor %d cannot be encoded", index)
+			break
+		}
+		candidateMessagesBytes := encodedMessagesBytes + len(encodedMessage)
+		if index > start {
+			candidateMessagesBytes++ // comma between array items
+		}
+		emptyPage := newSessionMessagesResponse(requestID, messages, total, start, start, index+1)
+		emptyWire, err := json.Marshal(emptyPage)
+		if err != nil || len(emptyWire)+candidateMessagesBytes > protocol.MaxANPDeviceMessageBytes {
+			failureMessage = fmt.Sprintf("Message page at cursor %d exceeds the %d-byte Device response limit", index, protocol.MaxANPDeviceMessageBytes)
+			break
+		}
+		bestEnd = index + 1
+		encodedMessagesBytes = candidateMessagesBytes
+	}
+	if start == end {
+		return newSessionMessagesResponse(requestID, messages, total, start, end, start)
+	}
+	if bestEnd == start {
+		if failureMessage == "" {
+			failureMessage = fmt.Sprintf("Message at cursor %d exceeds the Device response limits", start)
+		}
+		return protocol.NewErrorResponse(requestID, protocol.ANPErrorResponseTooLarge, failureMessage)
+	}
+	return newSessionMessagesResponse(requestID, messages, total, start, bestEnd, bestEnd)
+}
+
+func newSessionMessagesResponse(requestID string, messages []StoredMessage, total, start, end, cursor int) *protocol.ANPMessage {
+	result, _ := json.Marshal(sessionMessagesPage{
+		Messages: messages[start:end],
+		Total:    total,
+		Cursor:   cursor,
+	})
+	return protocol.NewResultResponse(requestID, result)
+}
+
+func ensureAgentStarted(ctx context.Context, a agent.Agent) (bool, error) {
+	if a.Status() != agent.AgentDisconnected {
+		return false, nil
+	}
+	if err := a.Start(ctx); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // StreamCallback 流式推送回调（由 TunnelService 设置）
@@ -582,4 +841,4 @@ type StreamCallback func(requestID string, chunkType string, text string) error
 
 // InvokeFinalCallback 流式调用最终响应回调（由 TunnelService 设置）
 // 在流式输出全部完成后，发送 invoke 的最终 JSON-RPC 结果
-type InvokeFinalCallback func(requestID string, result json.RawMessage, errMsg string)
+type InvokeFinalCallback func(requestID string, result json.RawMessage, responseError *protocol.ANPError)

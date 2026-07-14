@@ -10,10 +10,11 @@ package infra
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,39 +23,45 @@ const (
 	LogDir = ".agent-bridge/logs"
 )
 
+var loggerFileState struct {
+	sync.Mutex
+	file *os.File
+}
+
 // InitLogger 初始化 slog 日志器
 //   - 开发模式：输出到控制台，带颜色级别，格式友好
 //   - 生产模式：同时输出到控制台和日志文件，JSON 格式
 func InitLogger(debug bool) error {
+	loggerFileState.Lock()
+	defer loggerFileState.Unlock()
+
 	var handlers []slog.Handler
+	options := &slog.HandlerOptions{
+		Level:       getLogLevel(debug),
+		AddSource:   debug,
+		ReplaceAttr: replaceLogAttribute,
+	}
 
 	// 控制台输出（始终开启）
-	consoleHandler := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level:     getLogLevel(debug),
-		AddSource: debug,
-		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
-			// 时间格式化
-			if a.Key == slog.TimeKey {
-				return slog.Attr{
-					Key:   slog.TimeKey,
-					Value: slog.StringValue(a.Value.Time().Format("2006-01-02 15:04:05")),
-				}
-			}
-			return a
-		},
-	})
+	consoleHandler := slog.NewTextHandler(os.Stderr, options)
 	handlers = append(handlers, consoleHandler)
+	slog.SetDefault(slog.New(consoleHandler))
+	if loggerFileState.file != nil {
+		_ = loggerFileState.file.Close()
+		loggerFileState.file = nil
+	}
 
-	// 文件输出（debug 模式下也输出到文件）
-	if debug {
-		logPath := getLogFilePath()
-		if err := os.MkdirAll(filepath.Dir(logPath), 0755); err == nil {
-			f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-			if err == nil {
-				fileHandler := slog.NewJSONHandler(f, &slog.HandlerOptions{
-					Level: slog.LevelDebug,
-				})
+	// Local Console 的日志页在普通模式下也必须可用。
+	logPath := getLogFilePath()
+	if logPath != "" && ensurePrivateDirectory(filepath.Dir(logPath)) == nil {
+		f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err == nil {
+			if err := f.Chmod(0o600); err == nil {
+				fileHandler := slog.NewJSONHandler(f, options)
 				handlers = append(handlers, fileHandler)
+				loggerFileState.file = f
+			} else {
+				_ = f.Close()
 			}
 		}
 	}
@@ -69,6 +76,46 @@ func InitLogger(debug bool) error {
 	return nil
 }
 
+// CloseLogger releases the active log file. It is safe to call repeatedly.
+func CloseLogger() error {
+	loggerFileState.Lock()
+	defer loggerFileState.Unlock()
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		ReplaceAttr: replaceLogAttribute,
+	})))
+	if loggerFileState.file == nil {
+		return nil
+	}
+	file := loggerFileState.file
+	loggerFileState.file = nil
+	return file.Close()
+}
+
+func replaceLogAttribute(_ []string, attribute slog.Attr) slog.Attr {
+	if attribute.Key == slog.TimeKey {
+		return slog.Attr{
+			Key:   slog.TimeKey,
+			Value: slog.StringValue(attribute.Value.Time().Format("2006-01-02 15:04:05")),
+		}
+	}
+	if isSensitiveLogKey(attribute.Key) {
+		return slog.String(attribute.Key, "[REDACTED]")
+	}
+	return attribute
+}
+
+func isSensitiveLogKey(key string) bool {
+	key = strings.ToLower(strings.ReplaceAll(key, "-", "_"))
+	switch key {
+	case "token", "authorization", "api_key", "bridge_token", "setup_token", "pairing_code",
+		"content", "prompt", "message", "message_body", "request_body", "response_body":
+		return true
+	default:
+		return false
+	}
+}
+
 // getLogLevel 根据 debug 模式返回日志级别
 func getLogLevel(debug bool) slog.Leveler {
 	if debug {
@@ -81,7 +128,7 @@ func getLogLevel(debug bool) slog.Leveler {
 func getLogFilePath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return filepath.Join(os.TempDir(), "Agent-Bridge.log")
+		return ""
 	}
 	return filepath.Join(home, LogDir,
 		time.Now().Format("2006-01-02")+".log")
@@ -97,11 +144,19 @@ func newTeeHandler(handlers ...slog.Handler) *teeHandler {
 }
 
 func (h *teeHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return true
+	for _, handler := range h.handlers {
+		if handler.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *teeHandler) Handle(ctx context.Context, r slog.Record) error {
 	for _, handler := range h.handlers {
+		if !handler.Enabled(ctx, r.Level) {
+			continue
+		}
 		if err := handler.Handle(ctx, r.Clone()); err != nil {
 			return err
 		}
@@ -127,10 +182,3 @@ func (h *teeHandler) WithGroup(name string) slog.Handler {
 
 // 确保 teeHandler 实现 slog.Handler 接口
 var _ slog.Handler = (*teeHandler)(nil)
-
-// nopCloser 用于包装 io.Writer 为 io.WriteCloser（兼容文件接口）
-type nopCloser struct {
-	io.Writer
-}
-
-func (nopCloser) Close() error { return nil }

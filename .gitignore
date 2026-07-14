@@ -15,6 +15,7 @@ docs/assets/readme/*
 build/
 bin/
 dist/
+node_modules/
 *.exe
 bridge.exe~
 
