@@ -84,35 +84,44 @@ func ListScanners() []LogScanner {
 // Lzm 2026-07-10
 var knownSessionDirs = map[string][]string{
 	"kimi": {
-		filepath.Join(os.Getenv("USERPROFILE"), ".kimi-code", "sessions"),
+		filepath.Join(homeDir(), ".kimi-code", "sessions"),
 	},
 	"codex": {
-		filepath.Join(os.Getenv("USERPROFILE"), ".codex", "sessions"),
+		filepath.Join(homeDir(), ".codex", "sessions"),
 	},
 	"claude-code": {
-		filepath.Join(os.Getenv("USERPROFILE"), ".claude", "projects"),
+		filepath.Join(homeDir(), ".claude", "projects"),
 	},
 	"opencode": {
-		filepath.Join(os.Getenv("USERPROFILE"), ".local", "share", "opencode"),
+		filepath.Join(homeDir(), ".local", "share", "opencode"),
 	},
 	"gemini": {
-		filepath.Join(os.Getenv("USERPROFILE"), ".gemini", "sessions"),
+		filepath.Join(homeDir(), ".gemini", "sessions"),
 	},
 	"copilot": {
-		filepath.Join(os.Getenv("USERPROFILE"), ".copilot", "sessions"),
+		filepath.Join(homeDir(), ".copilot", "sessions"),
 	},
 	"pi": {
-		filepath.Join(os.Getenv("USERPROFILE"), ".pi", "agent", "sessions"),
+		filepath.Join(homeDir(), ".pi", "agent", "sessions"),
 	},
 	"cursor": {
-		filepath.Join(os.Getenv("USERPROFILE"), ".cursor", "sessions"),
+		filepath.Join(homeDir(), ".cursor", "sessions"),
 	},
 	"glm": {
-		filepath.Join(os.Getenv("USERPROFILE"), ".local", "state", "glm-acp-agent", "sessions"),
+		filepath.Join(homeDir(), ".local", "state", "glm-acp-agent", "sessions"),
 	},
 	"openclaw": {
-		filepath.Join(os.Getenv("USERPROFILE"), ".openclaw", "state"),
+		filepath.Join(homeDir(), ".openclaw", "state"),
 	},
+}
+
+// homeDir 返回当前用户的 home 目录，跨平台兼容
+func homeDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return os.Getenv("HOME")
+	}
+	return home
 }
 
 // ScannerFromAgentID 根据 Agent ID 自动创建对应的 LogScanner

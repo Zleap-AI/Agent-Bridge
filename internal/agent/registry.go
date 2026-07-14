@@ -267,17 +267,16 @@ func (r *AgentRegistry) Discover() error {
 		{
 			id:          "pi",
 			displayName: "pi",
-			// 直接使用 node 运行 pi-acp 的 JS 文件（绕过 .cmd 脚本）
-			// Windows 上 Go exec.CommandContext 启动的 Node.js 子进程有 EPERM 问题
-			// 直接调用 node 可能可以绕过此问题
-			cmd:  "node",
-			args: []string{filepath.Join(os.Getenv("USERPROFILE"), ".trae-cn", "binaries", "node", "versions", "24.18.0", "node_modules", "pi-acp", "dist", "index.js")},
-			env: map[string]string{
-				"HOME":         os.Getenv("USERPROFILE"),
-				"USERPROFILE":  os.Getenv("USERPROFILE"),
-				"APPDATA":      os.Getenv("APPDATA"),
-				"LOCALAPPDATA": os.Getenv("LOCALAPPDATA"),
-			},
+			// 跨平台启动 pi-acp：
+			//   Windows: 通过 node 直接运行 JS 文件（绕过 .cmd 脚本的 EPERM 问题）
+			//   macOS/Linux: 直接使用 PATH 中的 pi-acp 命令
+			cmd: findPiACPCmd(),
+			args: func() []string {
+				if cmd, args := findPiACPCommand(); cmd == "node" {
+					return args
+				}
+				return []string{"acp"}
+			}(),
 			newAgent: func(meta AgentMeta) Agent {
 				return NewPiAgent(meta)
 			},
@@ -349,6 +348,33 @@ func mergeEnv(base, override map[string]string) map[string]string {
 		result[k] = v
 	}
 	return result
+}
+
+// findPiACPCommand 查找 pi-acp 可执行文件的路径
+// 优先从 PATH 中查找 pi-acp，Windows 上回退到 Trae 内置路径
+// Lzm 2026-07-14
+func findPiACPCommand() (cmd string, args []string) {
+	// 1. 优先从 PATH 查找 pi-acp（macOS/Linux 正常安装走这里）
+	if _, err := exec.LookPath("pi-acp"); err == nil {
+		return "pi-acp", nil
+	}
+
+	// 2. Windows 上回退到 Trae 内置的 pi-acp JS 文件
+	if home := os.Getenv("USERPROFILE"); home != "" {
+		jsPath := filepath.Join(home, ".trae-cn", "binaries", "node", "versions", "24.18.0", "node_modules", "pi-acp", "dist", "index.js")
+		if _, err := os.Stat(jsPath); err == nil {
+			return "node", []string{jsPath}
+		}
+	}
+
+	// 3. 兜底：返回 pi-acp，让 exec.LookPath 在 Start 时再失败
+	return "pi-acp", nil
+}
+
+// findPiACPCmd 返回 pi-acp 启动命令名
+func findPiACPCmd() string {
+	cmd, _ := findPiACPCommand()
+	return cmd
 }
 
 // resolveEnv 解析特定 Agent 需要的环境变量（平台特有）
