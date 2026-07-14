@@ -24,6 +24,7 @@ func TestDefaultConfigStartsUnpaired(t *testing.T) {
 func TestLoadAndSaveConfigPreservesRemoteContract(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("AGENT_BRIDGE_SERVER_URL", "")
 
 	want := &Config{

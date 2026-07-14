@@ -12,6 +12,7 @@ import (
 func TestInitLoggerWritesInfoFileByDefaultAndRedactsSensitiveFields(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	if err := InitLogger(false); err != nil {
 		t.Fatalf("InitLogger: %v", err)
 	}
@@ -41,6 +42,7 @@ func TestInitLoggerWritesInfoFileByDefaultAndRedactsSensitiveFields(t *testing.T
 func TestInitLoggerWritesDebugFileWhenEnabled(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	if err := InitLogger(true); err != nil {
 		t.Fatalf("InitLogger: %v", err)
 	}
