@@ -51,6 +51,20 @@ Local 可以完全脱离 Server 使用。需要远程调用时，Local 主动建
 | Caller API | 通过 REST 与 SSE 把 Agent 能力接入其他产品 |
 | 单文件部署 | Console 已嵌入 Go 二进制，运行时不需要 Go、Node.js 或外部数据库 |
 
+### WebUI 预览
+
+**Local Console**：在用户电脑发现和调用本机 Agent。
+
+<p align="center">
+  <img src="docs/assets/readme/local-console.png" alt="Agent-Bridge Local Console" width="960" />
+</p>
+
+**Remote Console**：通过自托管 Server 管理远程 Device。
+
+<p align="center">
+  <img src="docs/assets/readme/remote-console.png" alt="Agent-Bridge Remote Console" width="960" />
+</p>
+
 ### 数据边界
 
 - Agent 账号、模型 API Key、插件和工作目录仍由各 Agent 自己管理。
