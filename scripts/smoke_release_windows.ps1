@@ -74,6 +74,24 @@ try {
         -ArgumentList @("--background", "--listen", "127.0.0.1", "--port", "$port") `
         -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru
 
+    $registeredCommand = $null
+    for ($attempt = 0; $attempt -lt 100; $attempt++) {
+        $process.Refresh()
+        if ($process.HasExited) {
+            Fail "Agent-Bridge Local exited before registering autostart"
+        }
+        $registeredCommand = Get-ItemPropertyValue `
+            -Path $runKey -Name "Agent-Bridge" -ErrorAction SilentlyContinue
+        if ($null -ne $registeredCommand) {
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    $expectedCommand = '"' + $binary + '" --background'
+    if ($registeredCommand -ne $expectedCommand) {
+        Fail "autostart command is '$registeredCommand', expected '$expectedCommand'"
+    }
+
     $health = $null
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
         $process.Refresh()
@@ -92,12 +110,6 @@ try {
     }
     if ($health.status -ne "ok" -or $health.version -ne $binaryVersion) {
         Fail "Agent-Bridge Local returned unexpected health payload: $($health | ConvertTo-Json -Compress)"
-    }
-
-    $registeredCommand = Get-ItemPropertyValue -Path $runKey -Name "Agent-Bridge" -ErrorAction Stop
-    $expectedCommand = '"' + $binary + '" --background'
-    if ($registeredCommand -ne $expectedCommand) {
-        Fail "autostart command is '$registeredCommand', expected '$expectedCommand'"
     }
 
     Stop-Process -Id $process.Id -Force
