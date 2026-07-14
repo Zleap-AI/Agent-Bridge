@@ -150,7 +150,13 @@ func uniqueExistingDirs(paths []string) []string {
 // getExecutableExtensions 返回 Unix 可执行文件扩展名
 // Lzm 2026-07-11
 func getExecutableExtensions() []string {
-	return []string{""}
+	return []string{""} // macOS/Linux 不依赖扩展名，靠可执行权限位
+}
+
+// prioritizeNames macOS/Linux 保持原始顺序（Unix 无扩展名脚本是标准做法）
+// Lzm 2026-07-13
+func prioritizeNames(names []string) []string {
+	return names
 }
 
 // getNPMCommand 返回 Unix 上的 npm 命令名

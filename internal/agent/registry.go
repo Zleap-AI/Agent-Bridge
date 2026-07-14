@@ -170,7 +170,8 @@ func (r *AgentRegistry) Discover() error {
 		id          string
 		displayName string
 		cmd         string
-		args        []string // Agent 启动参数（如 Kimi 需 "acp" 子命令）
+		args        []string          // Agent 启动参数（如 Kimi 需 "acp" 子命令）
+		env         map[string]string // 额外环境变量
 		newAgent    func(meta AgentMeta) Agent
 	}
 
@@ -199,6 +200,24 @@ func (r *AgentRegistry) Discover() error {
 			slog.Warn("Codex: ACP wrapper 安装失败，使用原生 codex.exe（可能因 TTY 检测无法启动）",
 				"path", directPath,
 			)
+		}
+	}
+
+	piCmd := "pi-acp"
+	var piArgs []string
+	var piEnv map[string]string
+	if runtime.GOOS == "windows" {
+		piCmd = "node"
+		piArgs = []string{filepath.Join(
+			os.Getenv("USERPROFILE"),
+			".trae-cn", "binaries", "node", "versions", "24.18.0",
+			"node_modules", "pi-acp", "dist", "index.js",
+		)}
+		piEnv = map[string]string{
+			"HOME":         os.Getenv("USERPROFILE"),
+			"USERPROFILE":  os.Getenv("USERPROFILE"),
+			"APPDATA":      os.Getenv("APPDATA"),
+			"LOCALAPPDATA": os.Getenv("LOCALAPPDATA"),
 		}
 	}
 
@@ -268,7 +287,9 @@ func (r *AgentRegistry) Discover() error {
 		{
 			id:          "pi",
 			displayName: "pi",
-			cmd:         "pi-acp",
+			cmd:         piCmd,
+			args:        piArgs,
+			env:         piEnv,
 			newAgent: func(meta AgentMeta) Agent {
 				return NewPiAgent(meta)
 			},
@@ -315,7 +336,7 @@ func (r *AgentRegistry) Discover() error {
 			Cmd:         fullPath,
 			Args:        c.args,
 			WorkDir:     workDir,
-			Env:         r.resolveEnv(c.id),
+			Env:         mergeEnv(r.resolveEnv(c.id), c.env),
 			PathDirs:    orderedSearchPaths(fullPath, executionPaths),
 		}
 
@@ -409,6 +430,20 @@ func appendUniquePathDirs(paths []string, additions ...string) []string {
 	return uniquePathDirs(combined)
 }
 
+func mergeEnv(base, override map[string]string) map[string]string {
+	if base == nil && override == nil {
+		return nil
+	}
+	result := make(map[string]string, len(base)+len(override))
+	for key, value := range base {
+		result[key] = value
+	}
+	for key, value := range override {
+		result[key] = value
+	}
+	return result
+}
+
 // resolveEnv 解析特定 Agent 需要的环境变量（平台特有）
 // Lzm 2026-07-11
 func (r *AgentRegistry) resolveEnv(kind string) map[string]string {
@@ -445,10 +480,9 @@ func (r *AgentRegistry) resolveEnv(kind string) map[string]string {
 		return nil
 
 	case "pi":
-		// pi coding agent 使用自有配置管理 API Key
-		// 配置存储在 ~/.pi/agent/settings.json 中
-		// 前置安装：npm install -g @earendil-works/pi-coding-agent （pi 本体）
-		//          npm install -g pi-acp                    （ACP 适配器）
+		// pi 使用自有配置管理 API Key
+		// 配置存储在 ~/.pi/agent/auth.json 和 settings.json 中
+		// 前置安装：npm install -g @earendil-works/pi-coding-agent
 		return nil
 
 	case "cursor":
@@ -548,6 +582,9 @@ func findExecutableWithExtensions(name string, searchPaths, extensions []string)
 			return abs
 		}
 	}
+
+	// 平台特有的优先级调整（Windows 上将无扩展名原始名移到最后）
+	names = prioritizeNames(names)
 
 	// 在搜索路径中查找
 	for _, dir := range searchPaths {
