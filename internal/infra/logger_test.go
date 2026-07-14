@@ -16,6 +16,11 @@ func TestInitLoggerWritesInfoFileByDefaultAndRedactsSensitiveFields(t *testing.T
 	if err := InitLogger(false); err != nil {
 		t.Fatalf("InitLogger: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := CloseLogger(); err != nil {
+			t.Errorf("CloseLogger: %v", err)
+		}
+	})
 	slog.Info("default logger test", "token", "do-not-log-this-token", "message", "do-not-log-this-message")
 	slog.Debug("debug entry must stay hidden")
 
@@ -46,6 +51,11 @@ func TestInitLoggerWritesDebugFileWhenEnabled(t *testing.T) {
 	if err := InitLogger(true); err != nil {
 		t.Fatalf("InitLogger: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := CloseLogger(); err != nil {
+			t.Errorf("CloseLogger: %v", err)
+		}
+	})
 	slog.Debug("debug logger test")
 
 	data, err := os.ReadFile(getLogFilePath())

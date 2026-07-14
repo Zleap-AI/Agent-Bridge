@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,10 +23,18 @@ const (
 	LogDir = ".agent-bridge/logs"
 )
 
+var loggerFileState struct {
+	sync.Mutex
+	file *os.File
+}
+
 // InitLogger 初始化 slog 日志器
 //   - 开发模式：输出到控制台，带颜色级别，格式友好
 //   - 生产模式：同时输出到控制台和日志文件，JSON 格式
 func InitLogger(debug bool) error {
+	loggerFileState.Lock()
+	defer loggerFileState.Unlock()
+
 	var handlers []slog.Handler
 	options := &slog.HandlerOptions{
 		Level:       getLogLevel(debug),
@@ -36,6 +45,11 @@ func InitLogger(debug bool) error {
 	// 控制台输出（始终开启）
 	consoleHandler := slog.NewTextHandler(os.Stderr, options)
 	handlers = append(handlers, consoleHandler)
+	slog.SetDefault(slog.New(consoleHandler))
+	if loggerFileState.file != nil {
+		_ = loggerFileState.file.Close()
+		loggerFileState.file = nil
+	}
 
 	// Local Console 的日志页在普通模式下也必须可用。
 	logPath := getLogFilePath()
@@ -45,6 +59,7 @@ func InitLogger(debug bool) error {
 			if err := f.Chmod(0o600); err == nil {
 				fileHandler := slog.NewJSONHandler(f, options)
 				handlers = append(handlers, fileHandler)
+				loggerFileState.file = f
 			} else {
 				_ = f.Close()
 			}
@@ -59,6 +74,22 @@ func InitLogger(debug bool) error {
 	}
 
 	return nil
+}
+
+// CloseLogger releases the active log file. It is safe to call repeatedly.
+func CloseLogger() error {
+	loggerFileState.Lock()
+	defer loggerFileState.Unlock()
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+		ReplaceAttr: replaceLogAttribute,
+	})))
+	if loggerFileState.file == nil {
+		return nil
+	}
+	file := loggerFileState.file
+	loggerFileState.file = nil
+	return file.Close()
 }
 
 func replaceLogAttribute(_ []string, attribute slog.Attr) slog.Attr {

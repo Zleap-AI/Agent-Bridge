@@ -61,6 +61,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "初始化日志失败: %v\n", err)
 		os.Exit(1)
 	}
+	defer func() { _ = infra.CloseLogger() }()
 	if err := ensureUserAutostart(); err != nil {
 		slog.Warn("注册用户级自启动失败", "error", err)
 	}
