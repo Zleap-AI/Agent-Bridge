@@ -24,28 +24,46 @@ func getExtraSearchPaths() []string {
 	return []string{
 		filepath.Join(home, "AppData", "Roaming", "npm"),
 		os.Getenv("APPDATA") + "\\npm",
-		filepath.Join(home, ".local", "bin"), // WSL/Cursor CLI 安装路径
-		filepath.Join(home, "AppData", "Local", "Cursor"), // Cursor Windows 路径
-		filepath.Join(home, "AppData", "Local", "cursor-agent"), // Cursor Agent CLI 安装路径
+		filepath.Join(home, ".local", "bin"),                             // WSL/Cursor CLI 安装路径
+		filepath.Join(home, "AppData", "Local", "Cursor"),                // Cursor Windows 路径
+		filepath.Join(home, "AppData", "Local", "cursor-agent"),          // Cursor Agent CLI 安装路径
 		filepath.Join(home, "AppData", "Local", "GitHub CLI", "copilot"), // Copilot CLI (gh extension) 安装路径
+		// Trae-cn Node.js 全局安装目录（pi 的正确版本在此）
+		filepath.Join(home, ".trae-cn", "binaries", "node", "versions", "24.18.0"),
 	}
 }
 
 // getExecutableExtensions 返回 Windows 可执行文件扩展名列表（来自 PATHEXT）
-// Lzm 2026-07-11
+// Windows 上优先匹配 .cmd/.exe/.bat，无扩展名放最后（npm 会同时生成 .cmd 和 无扩展名脚本）
+// Lzm 2026-07-13
 func getExecutableExtensions() []string {
-	exts := []string{""} // 无扩展名优先
 	pathext := os.Getenv("PATHEXT")
 	if pathext == "" {
 		return []string{".exe", ".cmd", ".bat", ".com"}
 	}
+	exts := []string{}
 	for _, ext := range strings.Split(strings.ToLower(pathext), ";") {
 		ext = strings.TrimSpace(ext)
 		if ext != "" {
 			exts = append(exts, ext)
 		}
 	}
+	// 无扩展名放最后（避免找到 Unix shell 脚本而非 Windows .cmd 文件）
+	exts = append(exts, "")
 	return exts
+}
+
+// prioritizeNames Windows 上将无扩展名的原始名移到最后
+// npm 会同时生成 .cmd 和 Unix shell 脚本（无扩展名），优先匹配 .cmd
+// Lzm 2026-07-13
+func prioritizeNames(names []string) []string {
+	if len(names) <= 1 {
+		return names
+	}
+	raw := names[0]                            // 原始名（如 "pi"）
+	result := append([]string{}, names[1:]...) // 扩展名版本
+	result = append(result, raw)               // 原始名放最后
+	return result
 }
 
 // getNPMCommand 返回 Windows 上的 npm 命令名

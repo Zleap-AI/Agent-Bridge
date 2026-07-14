@@ -21,8 +21,8 @@ import (
 func getExtraSearchPaths() []string {
 	home, _ := os.UserHomeDir()
 	return []string{
-		"/usr/local/bin",                // Intel Mac 常见安装路径
-		"/opt/homebrew/bin",             // Apple Silicon Homebrew
+		"/usr/local/bin",                          // Intel Mac 常见安装路径
+		"/opt/homebrew/bin",                       // Apple Silicon Homebrew
 		filepath.Join(home, ".npm-global", "bin"), // npm 全局安装
 		filepath.Join(home, "node_modules", ".bin"),
 		filepath.Join(home, ".local", "bin"), // Cursor CLI 安装路径
@@ -34,6 +34,12 @@ func getExtraSearchPaths() []string {
 // Lzm 2026-07-11
 func getExecutableExtensions() []string {
 	return []string{""} // macOS/Linux 不依赖扩展名，靠可执行权限位
+}
+
+// prioritizeNames macOS/Linux 保持原始顺序（Unix 无扩展名脚本是标准做法）
+// Lzm 2026-07-13
+func prioritizeNames(names []string) []string {
+	return names
 }
 
 // getNPMCommand 返回 macOS 上的 npm 命令名

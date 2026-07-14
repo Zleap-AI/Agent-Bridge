@@ -168,7 +168,8 @@ func (r *AgentRegistry) Discover() error {
 		id          string
 		displayName string
 		cmd         string
-		args        []string // Agent 启动参数（如 Kimi 需 "acp" 子命令）
+		args        []string          // Agent 启动参数（如 Kimi 需 "acp" 子命令）
+		env         map[string]string // 额外环境变量
 		newAgent    func(meta AgentMeta) Agent
 	}
 
@@ -266,7 +267,17 @@ func (r *AgentRegistry) Discover() error {
 		{
 			id:          "pi",
 			displayName: "pi",
-			cmd:         "pi-acp",
+			// 直接使用 node 运行 pi-acp 的 JS 文件（绕过 .cmd 脚本）
+			// Windows 上 Go exec.CommandContext 启动的 Node.js 子进程有 EPERM 问题
+			// 直接调用 node 可能可以绕过此问题
+			cmd:  "node",
+			args: []string{filepath.Join(os.Getenv("USERPROFILE"), ".trae-cn", "binaries", "node", "versions", "24.18.0", "node_modules", "pi-acp", "dist", "index.js")},
+			env: map[string]string{
+				"HOME":         os.Getenv("USERPROFILE"),
+				"USERPROFILE":  os.Getenv("USERPROFILE"),
+				"APPDATA":      os.Getenv("APPDATA"),
+				"LOCALAPPDATA": os.Getenv("LOCALAPPDATA"),
+			},
 			newAgent: func(meta AgentMeta) Agent {
 				return NewPiAgent(meta)
 			},
@@ -313,7 +324,7 @@ func (r *AgentRegistry) Discover() error {
 			Cmd:         fullPath,
 			Args:        c.args,
 			WorkDir:     workDir,
-			Env:         r.resolveEnv(c.id),
+			Env:         mergeEnv(r.resolveEnv(c.id), c.env),
 		}
 
 		agent := c.newAgent(meta)
@@ -322,6 +333,22 @@ func (r *AgentRegistry) Discover() error {
 	}
 
 	return nil
+}
+
+// mergeEnv 合并两个环境变量 map（后者覆盖前者）
+// Lzm 2026-07-14
+func mergeEnv(base, override map[string]string) map[string]string {
+	if base == nil && override == nil {
+		return nil
+	}
+	result := make(map[string]string)
+	for k, v := range base {
+		result[k] = v
+	}
+	for k, v := range override {
+		result[k] = v
+	}
+	return result
 }
 
 // resolveEnv 解析特定 Agent 需要的环境变量（平台特有）
@@ -360,10 +387,9 @@ func (r *AgentRegistry) resolveEnv(kind string) map[string]string {
 		return nil
 
 	case "pi":
-		// pi coding agent 使用自有配置管理 API Key
-		// 配置存储在 ~/.pi/agent/settings.json 中
-		// 前置安装：npm install -g @earendil-works/pi-coding-agent （pi 本体）
-		//          npm install -g pi-acp                    （ACP 适配器）
+		// pi 使用自有配置管理 API Key
+		// 配置存储在 ~/.pi/agent/auth.json 和 settings.json 中
+		// 前置安装：npm install -g @earendil-works/pi-coding-agent
 		return nil
 
 	case "cursor":
@@ -447,7 +473,7 @@ func readClaudeSettings(path string) map[string]string {
 
 // findExecutable 在 PATH 目录集合中查找可执行文件
 // 使用平台特有的扩展名列表（Windows 上自动尝试 .exe/.cmd 等）
-// Lzm 2026-07-11
+// Lzm 2026-07-13
 func findExecutable(name string, searchPaths map[string]struct{}) string {
 	// 先检查当前目录
 	if _, err := os.Stat(name); err == nil {
@@ -466,6 +492,9 @@ func findExecutable(name string, searchPaths map[string]struct{}) string {
 			names = append(names, name+ext)
 		}
 	}
+
+	// 平台特有的优先级调整（Windows 上将无扩展名原始名移到最后）
+	names = prioritizeNames(names)
 
 	// 在搜索路径中查找
 	for dir := range searchPaths {
