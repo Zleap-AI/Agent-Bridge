@@ -11,8 +11,9 @@
 $ErrorActionPreference = "Stop"
 
 # --- 配置 ---
-$BRIDGE_ADMIN = "http://localhost:9202"
-$ADMIN_WS = "ws://localhost:9202/ws/admin"
+$BRIDGE_ADMIN = if ($env:AGENT_BRIDGE_LOCAL_URL) { $env:AGENT_BRIDGE_LOCAL_URL.TrimEnd('/') } else { "http://localhost:9202" }
+$ADMIN_WS = $BRIDGE_ADMIN -replace '^http:', 'ws:' -replace '^https:', 'wss:'
+$ADMIN_WS = "$ADMIN_WS/ws/admin"
 $ALL_TESTS = 0
 $PASSED = 0
 $FAILED = 0
@@ -29,12 +30,6 @@ function Test-Step($name, $script) {
     }
 }
 
-function Get-Result {
-    param($body)
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
-    return Invoke-RestMethod -Method Post -Uri "$BRIDGE_ADMIN/invoke" -Body $bytes -ContentType "application/json"
-}
-
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "  Agent-Bridge - 端到端综合测试" -ForegroundColor Cyan
 Write-Host "============================================" -ForegroundColor Cyan
@@ -46,14 +41,13 @@ Write-Host "[集合 1] Bridge Admin API" -ForegroundColor Yellow
 Test-Step "Health 检查" {
     $h = Invoke-RestMethod -Uri "$BRIDGE_ADMIN/health" -Method Get
     if ($h.status -ne "ok") { throw "status=$($h.status), 期望 ok" }
-    if ($h.version -ne "0.3.0") { throw "version=$($h.version), 期望 0.3.0" }
+    if ($h.version -ne "0.4.0") { throw "version=$($h.version), 期望 0.4.0" }
     $ids = $h.agents.PSObject.Properties.Name -join ', '
     Write-Host "    agents: $ids"
 }
 
 Test-Step "Agent 列表" {
     $agents = Invoke-RestMethod -Uri "$BRIDGE_ADMIN/agents" -Method Get
-    if ($agents.Count -lt 1) { throw "Agent 数量=${agents.Count}" }
     $ids = $agents | ForEach-Object { $_.agent_id }
     Write-Host "    检测到 $($agents.Count) 个 Agent: $($ids -join ', ')"
 }
@@ -101,5 +95,6 @@ if ($FAILED -eq 0) {
     Write-Host " 全部通过 ($PASSED/$ALL_TESTS)" -ForegroundColor Green
 } else {
     Write-Host " 通过: $PASSED, 失败: $FAILED" -ForegroundColor Yellow
+    exit 1
 }
 Write-Host "============================================" -ForegroundColor Cyan

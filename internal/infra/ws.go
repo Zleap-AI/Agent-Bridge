@@ -12,8 +12,12 @@ package infra
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,9 +41,10 @@ type WSClient struct {
 	url       string
 	header    http.Header
 	mu        sync.Mutex
+	startOnce sync.Once
 	closed    bool
 	onMessage func(data []byte)
-	onError   func(err error)
+	onError   func(client *WSClient, err error)
 }
 
 // WSClientConfig WebSocket 客户端配置
@@ -47,21 +52,43 @@ type WSClientConfig struct {
 	URL       string
 	Header    http.Header
 	OnMessage func(data []byte)
-	OnError   func(err error)
+	OnError   func(client *WSClient, err error)
 }
+
+// WebSocketHandshakeError preserves the HTTP response status returned when a
+// WebSocket upgrade is rejected. Callers can use errors.As or
+// IsWebSocketHandshakeStatus without depending on Gorilla's dialer behavior.
+type WebSocketHandshakeError struct {
+	URL        string
+	StatusCode int
+	Err        error
+}
+
+func (e *WebSocketHandshakeError) Error() string {
+	return fmt.Sprintf("WebSocket handshake %s returned HTTP %d: %v", e.URL, e.StatusCode, e.Err)
+}
+
+func (e *WebSocketHandshakeError) Unwrap() error { return e.Err }
 
 // NewWSClient 创建并连接 WebSocket 客户端
 func NewWSClient(ctx context.Context, cfg WSClientConfig) (*WSClient, error) {
-	dialer := websocket.DefaultDialer
-	conn, _, err := dialer.Dial(cfg.URL, cfg.Header)
+	dialer := *websocket.DefaultDialer
+	conn, response, err := dialer.DialContext(ctx, cfg.URL, cfg.Header)
 	if err != nil {
-		return nil, fmt.Errorf("连接 WebSocket %s 失败: %w", cfg.URL, err)
+		if conn != nil {
+			_ = conn.Close()
+		}
+		return nil, newWebSocketDialError(cfg.URL, response, err)
 	}
 
 	conn.SetReadLimit(wsMaxMessageSize)
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
 	})
+	if err := conn.SetReadDeadline(time.Now().Add(wsReadTimeout)); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("设置 WebSocket 读取超时失败: %w", err)
+	}
 
 	client := &WSClient{
 		conn:      conn,
@@ -71,13 +98,35 @@ func NewWSClient(ctx context.Context, cfg WSClientConfig) (*WSClient, error) {
 		onError:   cfg.OnError,
 	}
 
-	// 启动读取协程
-	go client.readLoop()
-
-	// 启动 ping 协程
-	go client.pingLoop(ctx)
-
 	return client, nil
+}
+
+func newWebSocketDialError(address string, response *http.Response, err error) error {
+	statusCode := 0
+	if response != nil {
+		statusCode = response.StatusCode
+		if response.Body != nil {
+			_ = response.Body.Close()
+		}
+	}
+	if statusCode != 0 {
+		return &WebSocketHandshakeError{URL: address, StatusCode: statusCode, Err: err}
+	}
+	return fmt.Errorf("连接 WebSocket %s 失败: %w", address, err)
+}
+
+// Start begins the read and keepalive loops after the owner has installed the
+// client as its active connection. Delaying these loops closes the race where
+// an immediately closed socket reported an error before TunnelService could
+// associate the callback with the new connection.
+func (c *WSClient) Start(ctx context.Context) {
+	c.startOnce.Do(func() {
+		if c.isClosed() {
+			return
+		}
+		go c.readLoop()
+		go c.pingLoop(ctx)
+	})
 }
 
 // SendJSON 发送 JSON 消息
@@ -129,7 +178,7 @@ func (c *WSClient) readLoop() {
 	defer func() {
 		if r := recover(); r != nil {
 			if c.onError != nil {
-				c.onError(fmt.Errorf("读取协程 panic: %v", r))
+				c.onError(c, fmt.Errorf("读取协程 panic: %v", r))
 			}
 		}
 	}()
@@ -137,8 +186,8 @@ func (c *WSClient) readLoop() {
 	for {
 		_, message, err := c.conn.ReadMessage()
 		if err != nil {
-			if c.onError != nil && !c.closed {
-				c.onError(fmt.Errorf("WebSocket 读取失败: %w", err))
+			if c.onError != nil && !c.isClosed() {
+				c.onError(c, fmt.Errorf("WebSocket 读取失败: %w", err))
 			}
 			return
 		}
@@ -146,6 +195,12 @@ func (c *WSClient) readLoop() {
 			c.onMessage(message)
 		}
 	}
+}
+
+func (c *WSClient) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 // pingLoop 定期发送 ping 保活
@@ -167,10 +222,33 @@ func (c *WSClient) pingLoop(ctx context.Context) {
 			err := c.conn.WriteMessage(websocket.PingMessage, nil)
 			c.mu.Unlock()
 			if err != nil && c.onError != nil {
-				c.onError(fmt.Errorf("发送 ping 失败: %w", err))
+				c.onError(c, fmt.Errorf("发送 ping 失败: %w", err))
 			}
 		}
 	}
+}
+
+// IsWebSocketClose reports whether err, including a wrapped error, carries the
+// specified close code and reason. This keeps Gorilla-specific error handling
+// inside the WebSocket adapter.
+func IsWebSocketClose(err error, code int, reason string) bool {
+	var closeError *websocket.CloseError
+	return errors.As(err, &closeError) && closeError.Code == code && closeError.Text == reason
+}
+
+// IsWebSocketHandshakeStatus reports whether a rejected WebSocket handshake
+// returned one of the supplied HTTP status codes.
+func IsWebSocketHandshakeStatus(err error, statusCodes ...int) bool {
+	var handshakeError *WebSocketHandshakeError
+	if !errors.As(err, &handshakeError) {
+		return false
+	}
+	for _, statusCode := range statusCodes {
+		if handshakeError.StatusCode == statusCode {
+			return true
+		}
+	}
+	return false
 }
 
 // WSServer WebSocket 服务端（简易版，用于 Admin 接口）
@@ -184,10 +262,62 @@ func NewWSServer() *WSServer {
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  4096,
 			WriteBufferSize: 4096,
-			// 开发阶段允许所有来源
-			CheckOrigin: func(r *http.Request) bool { return true },
+			CheckOrigin:     IsAllowedLocalOrigin,
 		},
 	}
+}
+
+// IsAllowedLocalOrigin applies same-origin checks to the Local Console while
+// retaining support for non-browser clients, which do not send Origin. The two
+// loopback names are treated as equivalent so localhost pages may connect to a
+// server bound to 127.0.0.1.
+func IsAllowedLocalOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return false
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return false
+	}
+
+	if strings.EqualFold(u.Host, r.Host) {
+		return true
+	}
+
+	originHost, originPort := u.Hostname(), normalizedPort(u.Port(), u.Scheme == "https")
+	requestHost, requestPort := splitRequestHost(r)
+	return isLoopbackHost(originHost) && isLoopbackHost(requestHost) && originPort == requestPort
+}
+
+func splitRequestHost(r *http.Request) (string, string) {
+	host := r.Host
+	if parsedHost, parsedPort, err := net.SplitHostPort(host); err == nil {
+		return parsedHost, normalizedPort(parsedPort, r.TLS != nil)
+	}
+	return strings.Trim(host, "[]"), normalizedPort("", r.TLS != nil)
+}
+
+func normalizedPort(port string, secure bool) string {
+	if port != "" {
+		return port
+	}
+	if secure {
+		return "443"
+	}
+	return "80"
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 // Upgrade 将 HTTP 连接升级为 WebSocket

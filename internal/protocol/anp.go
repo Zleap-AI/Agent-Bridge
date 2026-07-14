@@ -11,6 +11,17 @@ package protocol
 
 import "encoding/json"
 
+const (
+	// MaxANPRequestBytes bounds one Server-to-Device WebSocket message.
+	MaxANPRequestBytes = 1024 * 1024
+	// MaxANPDeviceMessageBytes bounds one post-registration
+	// Device-to-Server WebSocket message.
+	MaxANPDeviceMessageBytes = 16 * 1024 * 1024
+	// ANPErrorResponseTooLarge identifies a Device result that cannot be
+	// represented inside the bounded Device-to-Server transport contract.
+	ANPErrorResponseTooLarge = -31010
+)
+
 // ANPMessage 远程服务与 Bridge 之间的 WebSocket 消息
 type ANPMessage struct {
 	JSONRPC string          `json:"jsonrpc,omitempty"`

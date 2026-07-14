@@ -92,9 +92,13 @@ type AgentMeta struct {
 	WorkDir string
 	// Env 环境变量（APY Key 等）
 	Env map[string]string
+	// PathDirs Agent 子进程可用的命令搜索目录。
+	// 后台服务通常只有最小 PATH；这些目录用于让绝对路径的 CLI 找到
+	// shebang 中通过 /usr/bin/env 启动的 node 等解释器。
+	PathDirs []string
 	// StartupTimeout 启动超时时间（含 ACP 握手）
 	StartupTimeout time.Duration
-	// ReadTimeout 单次读取超时
+	// ReadTimeout ACP 响应的最大静默时间；流式消息每到一块都会重新计时
 	ReadTimeout time.Duration
 }
 

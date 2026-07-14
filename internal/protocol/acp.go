@@ -19,6 +19,8 @@ import (
 	"github.com/Zleap-AI/Agent-Bridge/internal"
 )
 
+const maxACPLineSize = 2 * 1024 * 1024
+
 // ACPMessage JSON-RPC 2.0 消息结构（ACP 协议用）
 type ACPMessage struct {
 	JSONRPC string             `json:"jsonrpc"`
@@ -38,8 +40,10 @@ type ACPReader struct {
 
 // NewACPReader 创建 ACPReader
 func NewACPReader(r io.Reader) *ACPReader {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), maxACPLineSize)
 	return &ACPReader{
-		scanner: bufio.NewScanner(r),
+		scanner: scanner,
 	}
 }
 

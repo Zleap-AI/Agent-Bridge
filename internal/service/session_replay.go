@@ -65,7 +65,7 @@ func (sr *SessionLoadReplayer) LoadAndSaveSession(ctx context.Context, agentID, 
 	// Lzm 2026-07-10
 	acpReq := &protocol.ACPMessage{
 		JSONRPC: "2.0",
-		ID:      fmt.Sprintf("load_%s", sessionID[:8]),
+		ID:      fmt.Sprintf("load_%s", truncateString(sessionID, 8)),
 		Method:  "session/load",
 		Params: func() json.RawMessage {
 			data, _ := json.Marshal(map[string]interface{}{
@@ -103,7 +103,7 @@ func (sr *SessionLoadReplayer) LoadAndSaveSession(ctx context.Context, agentID, 
 
 	// 持久化到 MessageStore
 	if len(messages) > 0 {
-		sr.msgStore.SaveMessages(agentID, sessionID, messages)
+		sr.msgStore.SaveReplayedMessages(agentID, sessionID, messages)
 		slog.Info("ACP session/load 完成",
 			"agent", agentID,
 			"messages", len(messages),

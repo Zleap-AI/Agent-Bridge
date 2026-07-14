@@ -13,13 +13,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/Zleap-AI/Agent-Bridge/internal/infra"
+)
+
+const (
+	npmGlobalRootQueryTimeout  = 5 * time.Second
+	npmWrapperInstallTimeout   = 30 * time.Second
+	npmWrapperInstallWaitDelay = 500 * time.Millisecond
 )
 
 // AgentRegistry 管理所有 Agent 实例
@@ -63,8 +72,8 @@ type AgentDescriptor struct {
 
 // ListDescriptors 返回所有 Agent 的描述列表（给远程服务注册用）
 func (r *AgentRegistry) ListDescriptors() []AgentDescriptor {
-	var descriptors []AgentDescriptor
-	for _, a := range r.agents {
+	descriptors := make([]AgentDescriptor, 0, len(r.agents))
+	for _, a := range r.List() {
 		descriptors = append(descriptors, AgentDescriptor{
 			AgentID:     a.ID(),
 			DisplayName: a.DisplayName(),
@@ -77,11 +86,7 @@ func (r *AgentRegistry) ListDescriptors() []AgentDescriptor {
 // ListAgentIDs 返回所有 Agent 的 ID 列表（给前端展示用）
 // Lzm 2026-07-11
 func (r *AgentRegistry) ListAgentIDs() []string {
-	var ids []string
-	for _, a := range r.agents {
-		ids = append(ids, a.ID())
-	}
-	return ids
+	return r.IDs()
 }
 
 // --- 检测方法 ---
@@ -96,39 +101,36 @@ func (r *AgentRegistry) Discover() error {
 	}
 
 	// 获取 PATH 中的目录
-	pathDirs := filepath.SplitList(os.Getenv("PATH"))
+	parentPathDirs := filepath.SplitList(os.Getenv("PATH"))
 
 	// 常见 npm 全局安装目录等（平台特有）
 	extraPaths := getExtraSearchPaths()
-	pathDirs = append(pathDirs, extraPaths...)
+	executionPaths := prioritizeExecutionPaths(parentPathDirs, extraPaths)
 
-	// 构建唯一搜索路径集
-	searchPaths := make(map[string]struct{})
-	for _, dir := range pathDirs {
-		dir = strings.TrimSpace(dir)
-		if dir != "" {
-			searchPaths[dir] = struct{}{}
-		}
+	// 搜索顺序与进程 PATH 一致，避免 map 遍历随机选择旧版本运行时。
+	searchPaths := uniquePathDirs(executionPaths)
+	if npmPrefix := npmWrapperPrefix(); npmPrefix != "" {
+		searchPaths = appendUniquePathDirs(searchPaths, npmWrapperSearchPaths(npmPrefix)...)
 	}
 
 	// 获取当前目录（用于当前目录查找）
 	cwd, _ := os.Getwd()
-	searchPaths[cwd] = struct{}{}
+	searchPaths = appendUniquePathDirs(searchPaths, cwd)
 
 	// --- 扫描 Agent 专属安装路径（不在 PATH 中的） ---
 
 	// 1. npm 全局安装目录（codex-acp 等 wrapper 包安装在此）
-	if npmRoot := getNPMGlobalRoot(); npmRoot != "" {
+	if npmRoot := getNPMGlobalRoot(searchPaths, executionPaths); npmRoot != "" {
 		npmBinDir := filepath.Dir(npmRoot) // node_modules 的父目录
-		searchPaths[npmBinDir] = struct{}{}
+		searchPaths = appendUniquePathDirs(searchPaths, npmBinDir)
 		// 部分 npm 版本将 .cmd 放在 node_modules/.bin/
-		searchPaths[filepath.Join(npmRoot, ".bin")] = struct{}{}
+		searchPaths = appendUniquePathDirs(searchPaths, filepath.Join(npmRoot, ".bin"))
 		slog.Debug("添加 npm 全局目录", "bin", npmBinDir)
 	}
 
 	// 2. Codex 专属安装路径（平台特有）
 	for _, codexDir := range getCodexCandidates() {
-		searchPaths[codexDir] = struct{}{}
+		searchPaths = appendUniquePathDirs(searchPaths, codexDir)
 		slog.Debug("添加 Codex 搜索路径", "path", codexDir)
 	}
 
@@ -187,7 +189,7 @@ func (r *AgentRegistry) Discover() error {
 	} else if directPath := findExecutable("codex", searchPaths); directPath != "" {
 		// codex.exe 存在但 codex-acp 未安装，自动安装
 		slog.Info("Codex: ACP wrapper 未安装，尝试自动安装 @agentclientprotocol/codex-acp ...")
-		if installedPath := autoInstallNPMWrapper("codex-acp", "@agentclientprotocol/codex-acp", searchPaths); installedPath != "" {
+		if installedPath := autoInstallNPMWrapper("codex-acp", "@agentclientprotocol/codex-acp", &searchPaths, executionPaths); installedPath != "" {
 			codexCmd = installedPath
 			codexArgs = nil
 			slog.Info("Codex: ACP wrapper 自动安装成功", "path", installedPath)
@@ -204,7 +206,7 @@ func (r *AgentRegistry) Discover() error {
 		{
 			id:          "claude-code",
 			displayName: "Claude Code",
-			cmd:         detectClaudeCmd(searchPaths),
+			cmd:         detectClaudeCmd(&searchPaths, executionPaths),
 			newAgent: func(meta AgentMeta) Agent {
 				return NewClaudeCodeAgent(meta)
 			},
@@ -314,6 +316,7 @@ func (r *AgentRegistry) Discover() error {
 			Args:        c.args,
 			WorkDir:     workDir,
 			Env:         r.resolveEnv(c.id),
+			PathDirs:    orderedSearchPaths(fullPath, executionPaths),
 		}
 
 		agent := c.newAgent(meta)
@@ -322,6 +325,88 @@ func (r *AgentRegistry) Discover() error {
 	}
 
 	return nil
+}
+
+// prioritizeExecutionPaths keeps an interactive user's custom PATH order, but
+// moves minimal service paths behind runtime-manager locations discovered from
+// the home directory. This avoids accidentally selecting an older system node.
+func prioritizeExecutionPaths(parent, extra []string) []string {
+	preferred := make([]string, 0, len(parent)+len(extra))
+	fallback := make([]string, 0, len(parent)+len(extra))
+	appendPath := func(path string) {
+		if isSystemPath(path) {
+			fallback = append(fallback, path)
+		} else {
+			preferred = append(preferred, path)
+		}
+	}
+	for _, path := range parent {
+		appendPath(path)
+	}
+	for _, path := range extra {
+		appendPath(path)
+	}
+	return append(preferred, fallback...)
+}
+
+func isSystemPath(path string) bool {
+	cleaned := filepath.Clean(strings.TrimSpace(path))
+	if runtime.GOOS != "windows" {
+		switch cleaned {
+		case "/usr/bin", "/bin", "/usr/sbin", "/sbin":
+			return true
+		default:
+			return false
+		}
+	}
+
+	systemRoot := strings.TrimSpace(os.Getenv("SystemRoot"))
+	if systemRoot == "" {
+		return false
+	}
+	cleaned = strings.ToLower(cleaned)
+	systemRoot = strings.ToLower(filepath.Clean(systemRoot))
+	return cleaned == systemRoot || strings.HasPrefix(cleaned, systemRoot+string(os.PathSeparator))
+}
+
+// orderedSearchPaths builds the PATH passed to an Agent process. The command's
+// directory comes first so an npm shim and its matching node runtime stay
+// together. Discovery-only locations such as the current directory do not leak
+// into child PATH unless that is where the command itself was found.
+func orderedSearchPaths(command string, preferred []string) []string {
+	paths := make([]string, 0, len(preferred)+1)
+	paths = append(paths, filepath.Dir(command))
+	paths = append(paths, preferred...)
+	return uniquePathDirs(paths)
+}
+
+func uniquePathDirs(paths []string) []string {
+	result := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		path = filepath.Clean(path)
+		key := path
+		if runtime.GOOS == "windows" {
+			key = strings.ToLower(key)
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, path)
+	}
+	return result
+}
+
+func appendUniquePathDirs(paths []string, additions ...string) []string {
+	combined := make([]string, 0, len(paths)+len(additions))
+	combined = append(combined, paths...)
+	combined = append(combined, additions...)
+	return uniquePathDirs(combined)
 }
 
 // resolveEnv 解析特定 Agent 需要的环境变量（平台特有）
@@ -445,39 +530,44 @@ func readClaudeSettings(path string) map[string]string {
 	return nil
 }
 
-// findExecutable 在 PATH 目录集合中查找可执行文件
+// findExecutable 按给定 PATH 顺序查找可执行文件
 // 使用平台特有的扩展名列表（Windows 上自动尝试 .exe/.cmd 等）
 // Lzm 2026-07-11
-func findExecutable(name string, searchPaths map[string]struct{}) string {
-	// 先检查当前目录
-	if _, err := os.Stat(name); err == nil {
-		abs, _ := filepath.Abs(name)
-		return abs
-	}
+func findExecutable(name string, searchPaths []string) string {
+	return findExecutableWithExtensions(name, searchPaths, getExecutableExtensions())
+}
 
-	// 获取平台特有的可执行文件扩展名
-	extensions := getExecutableExtensions()
+func findExecutableWithExtensions(name string, searchPaths, extensions []string) string {
+	names := executableCandidateNames(name, extensions)
+	requireExecuteBit := len(extensions) == 1 && normalizeExecutableExtension(extensions[0]) == ""
 
-	// 构建待尝试的文件名列表
-	names := []string{name}
-	lowerName := strings.ToLower(name)
-	for _, ext := range extensions {
-		if ext != "" && !strings.HasSuffix(lowerName, ext) {
-			names = append(names, name+ext)
+	// 先检查显式路径。Windows 候选不包含无扩展名的 npm Unix shim。
+	for _, candidate := range names {
+		if executableFile(candidate, requireExecuteBit) {
+			abs, _ := filepath.Abs(candidate)
+			return abs
 		}
 	}
 
 	// 在搜索路径中查找
-	for dir := range searchPaths {
+	for _, dir := range searchPaths {
 		for _, n := range names {
 			fullPath := filepath.Join(dir, n)
-			if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
+			if executableFile(fullPath, requireExecuteBit) {
 				return fullPath
 			}
 		}
 	}
 
 	return ""
+}
+
+func executableFile(path string, requireExecuteBit bool) bool {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return false
+	}
+	return !requireExecuteBit || info.Mode().Perm()&0o111 != 0
 }
 
 // --- 注册方法 ---
@@ -494,9 +584,10 @@ func (r *AgentRegistry) Get(id string) Agent {
 
 // List 返回所有已注册的 Agent
 func (r *AgentRegistry) List() []Agent {
-	result := make([]Agent, 0, len(r.agents))
-	for _, a := range r.agents {
-		result = append(result, a)
+	ids := r.IDs()
+	result := make([]Agent, 0, len(ids))
+	for _, id := range ids {
+		result = append(result, r.agents[id])
 	}
 	return result
 }
@@ -507,6 +598,7 @@ func (r *AgentRegistry) IDs() []string {
 	for id := range r.agents {
 		ids = append(ids, id)
 	}
+	sort.Strings(ids)
 	return ids
 }
 
@@ -550,15 +642,27 @@ func (r *AgentRegistry) DisconnectAll(ctx context.Context) {
 // getNPMGlobalRoot 获取 npm 全局安装根目录（node_modules 路径）
 // 使用平台特有的 npm 命令名和候选目录
 // Lzm 2026-07-11
-func getNPMGlobalRoot() string {
+func getNPMGlobalRoot(searchPaths, executionPaths []string) string {
 	// 1. 尝试 `npm root -g` 获取
 	npmCmd := getNPMCommand()
-	cmd := exec.Command(npmCmd, "root", "-g")
-	output, err := cmd.Output()
-	if err == nil {
-		root := strings.TrimSpace(string(output))
-		if root != "" {
-			return root
+	npmPath := findExecutable(npmCmd, searchPaths)
+	if npmPath == "" {
+		if path, err := exec.LookPath(npmCmd); err == nil {
+			npmPath = path
+		}
+	}
+	if npmPath != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), npmGlobalRootQueryTimeout)
+		cmd := infra.CommandContext(ctx, npmPath, "root", "-g")
+		cmd.Env = environmentWithPath(orderedSearchPaths(npmPath, executionPaths))
+		cmd.WaitDelay = npmWrapperInstallWaitDelay
+		output, err := cmd.Output()
+		cancel()
+		if err == nil {
+			root := strings.TrimSpace(string(output))
+			if root != "" {
+				return root
+			}
 		}
 	}
 
@@ -576,14 +680,15 @@ func getNPMGlobalRoot() string {
 // 参数：
 //   - cmdName: wrapper 命令名（如 "codex-acp"）
 //   - pkgName: npm 包名（如 "@agentclientprotocol/codex-acp"）
-//   - searchPaths: 搜索路径集合（安装后会将目录加入此集合）
+//   - searchPaths: 有序搜索路径（安装后会将目录加入此列表）
+//   - executionPaths: 应用为 Agent 子进程准备的完整 PATH
 //
 // 返回安装后的完整路径，失败返回空字符串
 // Lzm 2026-07-10
-func autoInstallNPMWrapper(cmdName, pkgName string, searchPaths map[string]struct{}) string {
+func autoInstallNPMWrapper(cmdName, pkgName string, searchPaths *[]string, executionPaths []string) string {
 	// 1. 确认 npm 可用
 	npmCmd := getNPMCommand()
-	npmPath := findExecutable(npmCmd, searchPaths)
+	npmPath := findExecutable(npmCmd, *searchPaths)
 	if npmPath == "" {
 		// 尝试从 PATH 查找
 		if p, err := exec.LookPath(npmCmd); err == nil {
@@ -594,38 +699,33 @@ func autoInstallNPMWrapper(cmdName, pkgName string, searchPaths map[string]struc
 		}
 	}
 
-	// 2. 使用 TEMP 目录作为 npm prefix（解决 npm EPERM 问题）
-	// Windows 上 npm 默认全局安装到 Node 安装目录（%LOCALAPPDATA%\Trae\node...），
-	// 子进程可能没有写入权限。改用 %TEMP%\.npm-global（%TEMP% 已确认可写）
-	npmPrefix := filepath.Join(os.TempDir(), ".npm-global")
-	if err := os.MkdirAll(npmPrefix, 0755); err != nil {
+	// 2. 使用当前用户的私有 Local 数据目录，避免修改系统 npm 全局目录，
+	// 也避免 Linux 共享 /tmp 中可被其他用户替换的可执行文件。
+	npmPrefix := npmWrapperPrefix()
+	if npmPrefix == "" {
+		slog.Warn("无法确定 ACP wrapper 私有安装目录", "pkg", pkgName)
+		return ""
+	}
+	if err := os.MkdirAll(npmPrefix, 0o700); err != nil {
 		slog.Warn("创建 npm prefix 目录失败", "error", err)
+		return ""
+	}
+	if err := os.Chmod(npmPrefix, 0o700); err != nil {
+		slog.Warn("保护 npm prefix 目录失败", "error", err)
 		return ""
 	}
 
 	slog.Info("正在安装 "+pkgName, "npm", npmPath, "prefix", npmPrefix)
-	installCmd := exec.Command(npmPath, "install", "--prefix", npmPrefix, "-g", pkgName)
-	var stderr bytes.Buffer
-	installCmd.Stderr = &stderr
-
-	// 设置超时（npm install 可能较慢，给 120 秒）
-	done := make(chan error, 1)
-	go func() {
-		done <- installCmd.Run()
-	}()
-
-	select {
-	case err := <-done:
-		if err != nil {
+	stderr, err := runNPMInstall(npmPath, npmPrefix, pkgName, executionPaths, npmWrapperInstallTimeout)
+	if err != nil {
+		if err == context.DeadlineExceeded {
+			slog.Warn(pkgName+" 安装超时", "timeout", npmWrapperInstallTimeout.String())
+		} else {
 			slog.Warn(pkgName+" 安装失败",
 				"error", err,
-				"stderr", stderr.String(),
+				"stderr", stderr,
 			)
-			return ""
 		}
-	case <-time.After(120 * time.Second):
-		installCmd.Process.Kill()
-		slog.Warn(pkgName+" 安装超时", "timeout", "120s")
 		return ""
 	}
 
@@ -633,54 +733,124 @@ func autoInstallNPMWrapper(cmdName, pkgName string, searchPaths map[string]struc
 
 	// 3. 将 npm prefix 的 bin 目录加入搜索路径
 	// --prefix 安装后，.cmd 文件放在 {prefix} 目录本身（Windows）
-	searchPaths[npmPrefix] = struct{}{}
-	// node_modules/.bin 目录（Windows）
-	searchPaths[filepath.Join(npmPrefix, "node_modules", ".bin")] = struct{}{}
-	// {prefix}/bin/ 目录（macOS/Linux：npm --prefix 在此放符号链接）
-	searchPaths[filepath.Join(npmPrefix, "bin")] = struct{}{}
+	*searchPaths = appendUniquePathDirs(*searchPaths, npmWrapperSearchPaths(npmPrefix)...)
+	repairInstalledNPMWrapper(cmdName, npmPrefix)
 
 	// 4. 重新查找安装的 wrapper
-	if installedPath := findExecutable(cmdName, searchPaths); installedPath != "" {
+	if installedPath := findExecutable(cmdName, *searchPaths); installedPath != "" {
 		return installedPath
 	}
 
-	// 5. 最终尝试：直接检查 npm prefix 目录
-	checkPaths := []string{
-		filepath.Join(npmPrefix, cmdName+".cmd"),
-		filepath.Join(npmPrefix, cmdName),
-		filepath.Join(npmPrefix, "node_modules", ".bin", cmdName+".cmd"),
-		filepath.Join(npmPrefix, "node_modules", ".bin", cmdName),
-	}
-	for _, p := range checkPaths {
-		if info, err := os.Stat(p); err == nil && !info.IsDir() {
-			slog.Info("找到安装的 wrapper", "path", p)
-			return p
-		}
+	// 5. 最终尝试：按平台规则检查 npm prefix。Windows 仍然只会
+	// 选择 .exe/.cmd/.bat/.com，不会回退到 npm 同时生成的 Unix shim。
+	if installedPath := findExecutable(cmdName, []string{
+		npmPrefix,
+		filepath.Join(npmPrefix, "node_modules", ".bin"),
+		filepath.Join(npmPrefix, "bin"),
+	}); installedPath != "" {
+		slog.Info("找到安装的 wrapper", "path", installedPath)
+		return installedPath
 	}
 
 	return ""
+}
+
+func npmWrapperPrefix() string {
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, infra.LocalDataDir, "npm")
+}
+
+func npmWrapperSearchPaths(prefix string) []string {
+	return []string{
+		prefix,
+		filepath.Join(prefix, "node_modules", ".bin"),
+		filepath.Join(prefix, "bin"),
+	}
+}
+
+// Some npm packages publish a shebang entry point without an executable mode.
+// npm still creates the bin symlink, so repair only that freshly installed
+// private-prefix entry before discovery tries to launch it.
+func repairInstalledNPMWrapper(cmdName, npmPrefix string) {
+	if runtime.GOOS == "windows" {
+		return
+	}
+	for _, dir := range []string{
+		filepath.Join(npmPrefix, "bin"),
+		filepath.Join(npmPrefix, "node_modules", ".bin"),
+		npmPrefix,
+	} {
+		path := filepath.Join(dir, cmdName)
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 != 0 {
+			continue
+		}
+		if err := os.Chmod(path, info.Mode().Perm()|0o111); err != nil {
+			slog.Warn("无法修复 npm wrapper 执行权限", "path", path, "error", err)
+		}
+		return
+	}
+}
+
+func runNPMInstall(npmPath, npmPrefix, pkgName string, executionPaths []string, timeout time.Duration) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	installCmd := infra.CommandContext(ctx, npmPath, "install", "--prefix", npmPrefix, "-g", pkgName)
+	installCmd.Env = environmentWithPath(orderedSearchPaths(npmPath, executionPaths))
+	installCmd.WaitDelay = npmWrapperInstallWaitDelay
+	var stderr bytes.Buffer
+	installCmd.Stderr = &stderr
+	err := installCmd.Run()
+	if ctx.Err() != nil {
+		return stderr.String(), ctx.Err()
+	}
+	return stderr.String(), err
+}
+
+func environmentWithPath(pathDirs []string) []string {
+	env := os.Environ()
+	result := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		key, _, found := strings.Cut(entry, "=")
+		if found && environmentKeyEqual(key, "PATH") {
+			continue
+		}
+		result = append(result, entry)
+	}
+	return append(result, "PATH="+strings.Join(uniquePathDirs(pathDirs), string(os.PathListSeparator)))
+}
+
+func environmentKeyEqual(left, right string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
 }
 
 // detectClaudeCmd 检测 Claude Code ACP wrapper
 // 优先使用 claude-agent-acp，不存在时尝试自动安装
 // 注意：原始 claude 命令不支持 ACP 协议，不能直接注册使用
 // Lzm 2026-07-13
-func detectClaudeCmd(searchPaths map[string]struct{}) string {
+func detectClaudeCmd(searchPaths *[]string, executionPaths []string) string {
 	// 1. 优先查找 claude-agent-acp wrapper（这才是真正的 ACP 入口）
 	// 注：不能遍历 getClaudeScriptNames()，因为其中包含 "claude"，会绕过自动安装
-	if path := findExecutable("claude-agent-acp", searchPaths); path != "" {
+	if path := findExecutable("claude-agent-acp", *searchPaths); path != "" {
 		return path
 	}
 
 	// 2. 查找原始 claude 命令（ACP wrapper 可能未安装）
-	claudePath := findExecutable("claude", searchPaths)
+	claudePath := findExecutable("claude", *searchPaths)
 	if claudePath == "" {
 		return ""
 	}
 
 	// 3. 自动安装 @agentclientprotocol/claude-agent-acp 以提供 claude-agent-acp wrapper
 	slog.Info("Claude: ACP wrapper 未安装，尝试自动安装 @agentclientprotocol/claude-agent-acp ...")
-	installedPath := autoInstallNPMWrapper("claude-agent-acp", "@agentclientprotocol/claude-agent-acp", searchPaths)
+	installedPath := autoInstallNPMWrapper("claude-agent-acp", "@agentclientprotocol/claude-agent-acp", searchPaths, executionPaths)
 	if installedPath != "" {
 		slog.Info("Claude: ACP wrapper 自动安装成功", "path", installedPath)
 		return installedPath
@@ -689,50 +859,4 @@ func detectClaudeCmd(searchPaths map[string]struct{}) string {
 	// 4. 安装失败 — 不注册 claude-code（原始 claude 不支持 ACP 协议）
 	slog.Warn("Claude: ACP wrapper 安装失败，跳过注册（原始 claude 命令不支持 ACP 协议）")
 	return ""
-}
-
-// copyFile 复制文件
-func copyFile(src, dst string) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer srcFile.Close()
-
-	dstFile, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer dstFile.Close()
-
-	_, err = io.Copy(dstFile, srcFile)
-	return err
-}
-
-// copyDir 递归复制目录
-func copyDir(src, dst string) error {
-	if err := os.MkdirAll(dst, 0755); err != nil {
-		return err
-	}
-
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		srcPath := filepath.Join(src, entry.Name())
-		dstPath := filepath.Join(dst, entry.Name())
-
-		if entry.IsDir() {
-			if err := copyDir(srcPath, dstPath); err != nil {
-				return err
-			}
-		} else {
-			if err := copyFile(srcPath, dstPath); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }

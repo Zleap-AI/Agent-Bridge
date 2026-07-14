@@ -42,15 +42,31 @@ type Config struct {
 // DefaultConfig 返回默认配置
 func DefaultConfig() *Config {
 	return &Config{
-		ServerURL: "ws://localhost:9201/ws",
 		AdminPort: 9202,
 		Debug:     false,
 	}
 }
 
+// HasRemoteConnection reports whether enough of the legacy remote connection
+// contract is configured to start a tunnel. Token remains optional so existing
+// explicitly configured, unauthenticated gateways continue to work.
+func (c Config) HasRemoteConnection() bool {
+	return c.ServerURL != "" && c.BridgeID != ""
+}
+
+// Clone returns an independent copy suitable for saving or sharing between
+// the Local HTTP and tunnel lifecycles.
+func (c Config) Clone() *Config {
+	clone := c
+	return &clone
+}
+
 // LoadConfig 从标准路径加载配置
 // 优先级：环境变量 > 配置文件 > 默认值
 func LoadConfig() (*Config, error) {
+	if err := SecureLocalDataPermissions(); err != nil {
+		return nil, err
+	}
 	cfg := DefaultConfig()
 
 	// 1. 尝试从配置文件加载
@@ -79,15 +95,18 @@ func LoadConfig() (*Config, error) {
 func SaveConfig(cfg *Config) error {
 	configPath := getConfigPath()
 	dir := filepath.Dir(configPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := ensurePrivateDirectory(dir); err != nil {
 		return fmt.Errorf("创建配置目录 %s 失败: %w", dir, err)
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("序列化配置失败: %w", err)
 	}
-	if err := os.WriteFile(configPath, data, 0644); err != nil {
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
 		return fmt.Errorf("写入配置文件 %s 失败: %w", configPath, err)
+	}
+	if err := os.Chmod(configPath, 0o600); err != nil {
+		return fmt.Errorf("保护配置文件 %s 失败: %w", configPath, err)
 	}
 	return nil
 }

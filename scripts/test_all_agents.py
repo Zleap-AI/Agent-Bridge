@@ -260,9 +260,15 @@ class BridgeClient:
         self.uri = uri
         self.ws = None
         self.pending = {}
+        self.agents = []
 
     async def connect(self):
         self.ws = await websockets.connect(self.uri)
+        welcome = json.loads(await asyncio.wait_for(self.ws.recv(), timeout=5))
+        if welcome.get("method") != "bridge/list":
+            raise RuntimeError(f"未收到 bridge/list 欢迎消息: {welcome}")
+        bridges = welcome.get("params", {}).get("bridges", [])
+        self.agents = bridges[0].get("agents", []) if bridges else []
         return True
 
     async def close(self):
@@ -385,18 +391,7 @@ class BridgeClient:
 
 async def get_agents(bridge):
     """获取 bridge 中已注册的 Agent 列表"""
-    resp = await bridge.send_request("admin/agents", tag="init")
-    if resp.get("error"):
-        return []
-    agents = resp.get("result", [])
-    if isinstance(agents, list):
-        return agents
-    if isinstance(agents, dict):
-        # 可能是嵌套结构
-        for key in ("agents", "items", "data"):
-            if key in agents:
-                return agents[key]
-    return []
+    return bridge.agents
 
 
 async def check_env(env_var, env_file=None):
@@ -727,9 +722,9 @@ async def main():
     except (ConnectionRefusedError, OSError, websockets.exceptions.InvalidURI) as e:
         print(c(f"  ❌ 无法连接: {e}", "red"))
         print()
-        print(f"  请确认 bridge 已启动:")
-        print(f"    1. 在终端中运行: {c('./agent-bridge.exe --debug', 'cyan')}")
-        print(f"    2. 看到 'Admin HTTP 服务启动' 日志")
+        print(f"  请确认 Agent-Bridge Local 已启动:")
+        print(f"    1. Windows 双击 {c('agent-bridge.exe', 'cyan')}；macOS/Linux 运行 {c('./agent-bridge --background', 'cyan')}")
+        print(f"    2. 打开 {c(f'http://localhost:{port}', 'cyan')}，确认 Local Console 可用")
         print(f"    3. 重新运行本脚本")
         print()
         sys.exit(1)

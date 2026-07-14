@@ -17,7 +17,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 )
 
 // SessionRef 会话引用 — 对应 OpenViking 的 SessionRef
@@ -227,16 +226,4 @@ func DefaultLogScannerPaths() []string {
 		paths = append(paths, dirs...)
 	}
 	return paths
-}
-
-// stringPtr 辅助函数
-func stringPtr(s string) *string { return &s }
-
-// int64Ptr 辅助函数
-func int64Ptr(i int64) *int64 { return &i }
-
-// init 初始化 — 注册已知 Agent 的默认 Scanner（如果有）
-func init() {
-	// 注册系统时间计算
-	_ = time.Now
 }
