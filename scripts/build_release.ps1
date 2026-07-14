@@ -38,13 +38,14 @@ foreach ($target in $targets) {
     $goos = $target.os
     $goarch = $target.arch
 
+    # --- Local (bridge) ---
     if ($goos -eq "windows") {
         $binaryName = "zleap-bridge-go_${version}_${goos}_${goarch}.exe"
     } else {
         $binaryName = "zleap-bridge-go_${version}_${goos}_${goarch}"
     }
 
-    Write-Host "==> 构建 ${goos}/${goarch} ..." -ForegroundColor Cyan
+    Write-Host "==> 构建 Local ${goos}/${goarch} ..." -ForegroundColor Cyan
 
     $env:CGO_ENABLED = "0"
     $env:GOOS = $goos
@@ -54,11 +55,28 @@ foreach ($target in $targets) {
         -o (Join-Path $distDir $binaryName) ./cmd/bridge
 
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "!! 构建失败 ${goos}/${goarch}" -ForegroundColor Red
+        Write-Host "!! Local 构建失败 ${goos}/${goarch}" -ForegroundColor Red
         exit 1
     }
 
     Write-Host "   => $binaryName" -ForegroundColor Green
+
+    # --- Server（仅 Linux，服务端部署目标） ---
+    if ($goos -eq "linux") {
+        $serverName = "zleap-bridge-go_server_${version}_${goos}_${goarch}"
+
+        Write-Host "==> 构建 Server ${goos}/${goarch} ..." -ForegroundColor Cyan
+
+        go build -trimpath -ldflags="-s -w -X main.version=${binaryVersion}" `
+            -o (Join-Path $distDir $serverName) ./cmd/server
+
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "!! Server 构建失败 ${goos}/${goarch}" -ForegroundColor Red
+            exit 1
+        }
+
+        Write-Host "   => $serverName" -ForegroundColor Green
+    }
 }
 
 Write-Host "`n==> 生成校验文件 ..." -ForegroundColor Cyan
@@ -74,23 +92,28 @@ Write-Host "   => SHA256SUMS" -ForegroundColor Green
 
 Write-Host "`n==> 打包 zip ..." -ForegroundColor Cyan
 
-# 按平台打包 zip
-Get-ChildItem "$distDir\zleap-bridge-go_*" -Exclude "*.zip","SHA256SUMS" | ForEach-Object {
-    $binary = $_.Name
-    # 提取平台标识：zleap-bridge-go_v0.3.0_windows_amd64.exe -> windows_amd64
-    if ($binary -match '_.+?_(.+?_.+?)\.exe$') {
-        $platform = $matches[1]
-    } elseif ($binary -match '_.+?_(.+?_.+?)$') {
-        $platform = $matches[1]
-    } else {
-        return
-    }
+# 按平台打包 zip（Server 二进制合并到对应 Linux zip 中）
+$zipGroups = @(
+    @{ suffix = "windows_amd64"; files = @("zleap-bridge-go_${version}_windows_amd64.exe") }
+    @{ suffix = "windows_arm64"; files = @("zleap-bridge-go_${version}_windows_arm64.exe") }
+    @{ suffix = "darwin_amd64";  files = @("zleap-bridge-go_${version}_darwin_amd64") }
+    @{ suffix = "darwin_arm64";  files = @("zleap-bridge-go_${version}_darwin_arm64") }
+    @{ suffix = "linux_amd64";   files = @("zleap-bridge-go_${version}_linux_amd64", "zleap-bridge-go_server_${version}_linux_amd64") }
+    @{ suffix = "linux_arm64";   files = @("zleap-bridge-go_${version}_linux_arm64", "zleap-bridge-go_server_${version}_linux_arm64") }
+)
 
-    $zipName = "zleap-bridge-go_${version}_${platform}.zip"
+foreach ($group in $zipGroups) {
+    $suffix = $group.suffix
+    $zipName = "zleap-bridge-go_${version}_${suffix}.zip"
     $zipPath = Join-Path $distDir $zipName
 
-    Compress-Archive -Path $_.FullName -DestinationPath $zipPath -Force
+    $fullPaths = $group.files | ForEach-Object { Join-Path $distDir $_ }
+    Compress-Archive -Path $fullPaths -DestinationPath $zipPath -Force
     Write-Host "   => $zipName" -ForegroundColor Green
+
+    # 清理临时 zip 文件（如果 Server 在 SHA 阶段被重复计算）
+    $existingZip = Join-Path $distDir "zleap-bridge-go_${version}_${suffix}.zip"
+    if (-not (Test-Path $existingZip)) { return }
 }
 
 Write-Host "`n========================================" -ForegroundColor Cyan
