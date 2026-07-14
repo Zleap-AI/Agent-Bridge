@@ -43,7 +43,7 @@ func newWSACPAdapter(ctx context.Context, cmd *infra.ProcessManager, port int) (
 	pr, pw := io.Pipe()
 	url := fmt.Sprintf("ws://127.0.0.1:%d", port)
 
-	conn, err := infra.NewWSClient(ctx, infra.WSClientConfig{
+	client, err := infra.NewWSClient(ctx, infra.WSClientConfig{
 		URL: url,
 		OnMessage: func(data []byte) {
 			// 每条 WebSocket 消息直接写入管道，ACPReader 按行解析
@@ -54,7 +54,7 @@ func newWSACPAdapter(ctx context.Context, cmd *infra.ProcessManager, port int) (
 				)
 			}
 		},
-		OnError: func(err error) {
+		OnError: func(_ *infra.WSClient, err error) {
 			pw.CloseWithError(err)
 		},
 	})
@@ -63,6 +63,8 @@ func newWSACPAdapter(ctx context.Context, cmd *infra.ProcessManager, port int) (
 		pw.Close()
 		return nil, fmt.Errorf("连接 WebSocket ACP %s 失败: %w", url, err)
 	}
+	// 启动读取和保活协程
+	client.Start(ctx)
 
 	slog.Info("WebSocket ACP 已连接",
 		"url", url,
@@ -70,7 +72,7 @@ func newWSACPAdapter(ctx context.Context, cmd *infra.ProcessManager, port int) (
 	)
 
 	return &wsACPAdapter{
-		conn:      conn,
+		conn:      client,
 		cmd:       cmd,
 		readPipe:  pr,
 		writePipe: pw,

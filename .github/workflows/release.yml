@@ -6,27 +6,142 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  verify:
+    name: Verify source
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25.x"
           cache: true
-      - name: Test
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Test Go
         run: |
           go test ./...
+          go test -race ./...
           go vet ./...
-      - name: Build release packages
+      - name: Test consoles
+        working-directory: web
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+          npx playwright install --with-deps chromium
+          npm run test:e2e
+      - name: Test installers
+        run: bash scripts/test_installers.sh
+
+  build-release:
+    name: Build release artifacts
+    needs: verify
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build and inspect release artifacts
         run: bash scripts/build_release.sh "${GITHUB_REF_NAME}"
-      - name: Publish GitHub release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-bridge-release
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
+  native-smoke:
+    name: Native smoke (${{ matrix.goos }}/${{ matrix.goarch }})
+    needs: build-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - runner: macos-15
+            goos: darwin
+            goarch: arm64
+          - runner: windows-2022
+            goos: windows
+            goarch: amd64
+          - runner: windows-11-arm
+            goos: windows
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        if: runner.os == 'Windows'
+        with:
+          go-version: "1.25.x"
+          cache: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-bridge-release
+          path: dist
+      - name: Test Windows process and Local adapters natively
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: go test ./internal/infra ./cmd/bridge
+      - name: Smoke native Unix binaries
+        if: runner.os != 'Windows'
+        shell: bash
+        run: >-
+          bash scripts/smoke_release_unix.sh dist
+          "${GITHUB_REF_NAME}" "${{ matrix.goos }}" "${{ matrix.goarch }}"
+      - name: Smoke native Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          ./scripts/smoke_release_windows.ps1 -DistDir dist
+          -Version "$env:GITHUB_REF_NAME" -Arch "${{ matrix.goarch }}"
+
+  publish:
+    name: Publish GitHub release
+    needs: native-smoke
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-bridge-release
+          path: dist
+      - name: Publish release after native smoke tests
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "${GITHUB_REF_NAME}" dist/*
-          --title "Agent-Bridge ${GITHUB_REF_NAME}"
-          --generate-notes
+        run: |
+          notes="$(cat <<'EOF'
+          ### 平台验收
+
+          本 Release 的 Local 二进制已在 Linux x86_64/ARM64、macOS Intel/Apple Silicon、Windows x64/ARM64 的原生 GitHub runner 上验证版本号与实际启动；Linux Server 也已在 x86_64/ARM64 原生 runner 上验证。构建阶段另行核对全部 Go 二进制的目标格式、GOOS/GOARCH、文件清单与 SHA256。
+
+          CI 不替代真实服务管理器的完整生命周期验收。打标签前仍应在真实机器检查 macOS LaunchAgent、Linux systemd user/system 服务的安装、升级、重启与卸载，以及 Windows 登录后的实际自启动；验证范围详见 README。
+          EOF
+          )"
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Agent-Bridge ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --notes "$notes"

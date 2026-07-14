@@ -1,21 +1,14 @@
-// -*- coding: utf-8 -*-
-// Go 1.25+
-//
-// tunnel.go
-// TunnelService — 远程 WebSocket 服务与本地 Agent 之间的协议桥接核心
-// 负责：连接远程服务、接收 invoke 请求、转发到 Agent、回传流式结果
-//
-// Lzm 2026-07-09
-
 package service
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Zleap-AI/Agent-Bridge/internal/agent"
@@ -23,267 +16,414 @@ import (
 	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
 )
 
-// TunnelService 桥接远程 WebSocket 服务与本地 Agent
+const (
+	connectionReplacedCode   = 4001
+	connectionReplacedReason = "connection_replaced"
+	deviceDeletedReason      = "device_deleted"
+)
+
+// ErrConnectionReplaced means the Server accepted a newer connection for the
+// same Device. Reconnecting this older process would violate latest-wins.
+var ErrConnectionReplaced = errors.New("Device connection was replaced by a newer connection")
+
+// ErrCredentialsRevoked means the Server no longer accepts the Device token.
+// Retrying cannot recover; the user must pair the Device again.
+var ErrCredentialsRevoked = errors.New("Device credentials were revoked; pair this Device again")
+
+var errANPDeviceMessageTooLarge = errors.New("ANP Device message exceeds the transport limit")
+
+// TunnelService owns the single outbound Local-to-Server connection and keeps
+// the existing JSON-RPC bridge contract isolated from Local HTTP concerns.
 type TunnelService struct {
 	registry *agent.AgentRegistry
-	wsClient *infra.WSClient
 	cfg      TunnelConfig
+	router   *RequestRouter
+	sessions *SessionManager
 
-	// 消息路由器
-	router *RequestRouter
-
-	// 会话管理器
-	sessionMgr *SessionManager
-
-	// 控制
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	mu           sync.RWMutex
+	wsClient     *infra.WSClient
+	reconnecting bool
+	terminalErr  error
+	refreshOnce  sync.Once
 }
 
-// TunnelConfig TunnelService 配置
 type TunnelConfig struct {
-	// ServerURL 远程 WebSocket 地址
-	ServerURL string
-	// BridgeID Bridge 标识
-	BridgeID string
-	// Token 认证令牌
-	Token string
-	// ReconnectInterval 重连间隔
-	ReconnectInterval time.Duration
-	// MaxReconnectAttempts 最大重连次数（0 表示无限）
-	MaxReconnectAttempts int
+	ServerURL             string
+	BridgeID              string
+	Token                 string
+	ReconnectInterval     time.Duration
+	StatusRefreshInterval time.Duration
+	MaxReconnectAttempts  int
+	OnConnectionChange    func(connected bool, err error)
 }
 
-// DefaultTunnelConfig 返回默认隧道配置
 func DefaultTunnelConfig() TunnelConfig {
 	return TunnelConfig{
-		ReconnectInterval:    5 * time.Second,
-		MaxReconnectAttempts: 0, // 无限重连
+		ReconnectInterval:     5 * time.Second,
+		StatusRefreshInterval: 10 * time.Second,
+		MaxReconnectAttempts:  0,
 	}
 }
 
-// NewTunnelService 创建 TunnelService 实例
-// Lzm 2026-07-09
 func NewTunnelService(registry *agent.AgentRegistry, cfg TunnelConfig) *TunnelService {
+	return NewTunnelServiceWithSessionManager(registry, cfg, nil)
+}
+
+// NewTunnelServiceWithSessionManager lets the Local Console and outbound
+// tunnel share one session index and one serialized message store.
+func NewTunnelServiceWithSessionManager(registry *agent.AgentRegistry, cfg TunnelConfig, sessions *SessionManager) *TunnelService {
 	ctx, cancel := context.WithCancel(context.Background())
-
-	svc := &TunnelService{
-		registry:   registry,
-		cfg:        cfg,
-		ctx:        ctx,
-		cancel:     cancel,
-		sessionMgr: NewSessionManager(registry),
-		router:     NewRequestRouter(registry),
+	if cfg.ReconnectInterval <= 0 {
+		cfg.ReconnectInterval = 5 * time.Second
 	}
-
-	// 设置流式回调 — 将 Agent 的流式块推送到远程服务
-	svc.router.SetStreamCallback(func(requestID string, chunkType string, text string) error {
-		msg := protocol.NewStreamUpdate(requestID, chunkType, text)
-		if svc.wsClient != nil {
-			return svc.wsClient.SendJSON(msg)
-		}
-		return fmt.Errorf("WebSocket 未连接")
+	if cfg.StatusRefreshInterval <= 0 {
+		cfg.StatusRefreshInterval = 10 * time.Second
+	}
+	if sessions == nil {
+		sessions = NewSessionManager(registry)
+	}
+	service := &TunnelService{
+		registry: registry,
+		cfg:      cfg,
+		ctx:      ctx,
+		cancel:   cancel,
+		sessions: sessions,
+		router:   NewRequestRouter(registry),
+	}
+	service.router.SetStreamCallback(func(requestID, chunkType, text string) error {
+		return service.sendJSON(protocol.NewStreamUpdate(requestID, chunkType, text))
 	})
-
-	// 设置流式最终响应回调 — 流式完成后发送 invoke 结果
-	svc.router.SetFinalResponseCallback(func(requestID string, result json.RawMessage, errMsg string) {
-		if svc.wsClient == nil {
+	service.router.SetFinalResponseCallback(func(requestID string, result json.RawMessage, responseError *protocol.ANPError) {
+		if responseError != nil {
+			_ = service.sendJSON(protocol.NewErrorResponse(requestID, responseError.Code, responseError.Message))
 			return
 		}
-		if errMsg != "" {
-			// 发送错误响应
-			resp := protocol.NewErrorResponse(requestID, -31008, errMsg)
-			svc.wsClient.SendJSON(resp)
-		} else if result != nil {
-			// 发送正常结果
-			resp := protocol.NewResultResponse(requestID, result)
-			svc.wsClient.SendJSON(resp)
+		if result == nil {
+			result = json.RawMessage(`{}`)
+		}
+		if err := service.sendJSON(protocol.NewResultResponse(requestID, result)); errors.Is(err, errANPDeviceMessageTooLarge) {
+			_ = service.sendJSON(protocol.NewErrorResponse(requestID, protocol.ANPErrorResponseTooLarge,
+				fmt.Sprintf("Device response exceeds the %d-byte transport limit", protocol.MaxANPDeviceMessageBytes)))
 		}
 	})
-
-	return svc
+	return service
 }
 
-// Start 启动 TunnelService
-// 连接远程 WebSocket 服务，注册 Bridge，开始处理消息
-// Lzm 2026-07-09
 func (s *TunnelService) Start() error {
-	slog.Info("TunnelService 启动",
-		"server_url", s.cfg.ServerURL,
-		"bridge_id", s.cfg.BridgeID,
-	)
+	if strings.TrimSpace(s.cfg.ServerURL) == "" || strings.TrimSpace(s.cfg.BridgeID) == "" {
+		return fmt.Errorf("远程连接缺少 server_url 或 bridge_id")
+	}
+	slog.Info("TunnelService 启动", "server_url", s.cfg.ServerURL, "bridge_id", s.cfg.BridgeID)
+	client, err := s.connectClient()
+	if err != nil {
+		if terminalError, stopped := s.stopAfterTerminalError(err); stopped {
+			return fmt.Errorf("连接远程 WebSocket 服务失败: %w", terminalError)
+		}
+		return fmt.Errorf("连接远程 WebSocket 服务失败: %w", err)
+	}
 
-	// 构建远程连接所需的 HTTP Header
+	s.mu.Lock()
+	if s.ctx.Err() != nil {
+		s.mu.Unlock()
+		_ = client.Close()
+		return context.Canceled
+	}
+	s.wsClient = client
+	s.reconnecting = false
+	s.mu.Unlock()
+	if err := s.registerBridge(); err != nil {
+		s.mu.Lock()
+		if s.wsClient == client {
+			s.wsClient = nil
+		}
+		s.mu.Unlock()
+		_ = client.Close()
+		return err
+	}
+	s.notifyConnection(true, nil)
+	client.Start(s.ctx)
+	s.startStatusRefreshLoop()
+	return nil
+}
+
+func (s *TunnelService) Stop() {
+	s.cancel()
+	s.mu.Lock()
+	client := s.wsClient
+	s.wsClient = nil
+	s.reconnecting = false
+	s.mu.Unlock()
+	if client != nil {
+		_ = client.Close()
+	}
+}
+
+func (s *TunnelService) connectClient() (*infra.WSClient, error) {
+	return infra.NewWSClient(s.ctx, infra.WSClientConfig{
+		URL:       s.cfg.ServerURL,
+		Header:    s.connectionHeaders(),
+		OnMessage: s.handleMessage,
+		OnError:   s.handleConnectionError,
+	})
+}
+
+func (s *TunnelService) connectionHeaders() http.Header {
 	header := make(http.Header)
 	header.Set("X-Bridge-Id", s.cfg.BridgeID)
-
-	// 动态获取 agent ID 列表（从 registry 中读取实际发现的 Agent）
-	agentIDs := make([]string, 0)
-	for _, a := range s.registry.List() {
-		agentIDs = append(agentIDs, a.ID())
+	agentIDs := make([]string, 0, len(s.registry.List()))
+	for _, availableAgent := range s.registry.List() {
+		agentIDs = append(agentIDs, availableAgent.ID())
 	}
 	header.Set("X-Agent-Ids", strings.Join(agentIDs, ","))
 	if s.cfg.Token != "" {
 		header.Set("Authorization", "Bearer "+s.cfg.Token)
 	}
+	return header
+}
 
-	// 连接远程 WebSocket 服务
-	wsCfg := infra.WSClientConfig{
-		URL:    s.cfg.ServerURL,
-		Header: header,
-		OnMessage: func(data []byte) {
-			s.handleMessage(data)
-		},
-		OnError: func(err error) {
-			slog.Error("WebSocket 错误", "error", err)
-			// 自动重连
-			go s.reconnectLoop()
-		},
+func (s *TunnelService) handleConnectionError(client *infra.WSClient, err error) {
+	if s.ctx.Err() != nil {
+		return
 	}
-
-	client, err := infra.NewWSClient(s.ctx, wsCfg)
-	if err != nil {
-		return fmt.Errorf("连接远程 WebSocket 服务失败: %w", err)
+	terminalError := classifyTerminalConnectionError(err)
+	s.mu.Lock()
+	if s.terminalErr != nil || s.wsClient != client {
+		s.mu.Unlock()
+		return
 	}
-	s.wsClient = client
+	s.wsClient = nil
+	if terminalError != nil {
+		s.terminalErr = terminalError
+		s.reconnecting = false
+	} else {
+		if s.reconnecting {
+			s.mu.Unlock()
+			return
+		}
+		s.reconnecting = true
+	}
+	s.mu.Unlock()
+	_ = client.Close()
 
-	// 注册 Bridge
-	s.registerBridge()
+	if terminalError != nil {
+		s.notifyConnection(false, terminalError)
+		if errors.Is(terminalError, ErrConnectionReplaced) {
+			slog.Info("远程连接已被更新的 Device 连接替换")
+		} else {
+			slog.Info("远程 Device 凭据已撤销，需要重新配对")
+		}
+		return
+	}
+	s.notifyConnection(false, err)
+	slog.Warn("远程连接已断开，准备重连", "error", err)
+	go s.reconnectLoop()
+}
 
+func (s *TunnelService) reconnectLoop() {
+	for attempt := 1; ; attempt++ {
+		if s.cfg.MaxReconnectAttempts > 0 && attempt > s.cfg.MaxReconnectAttempts {
+			err := fmt.Errorf("重连次数已达上限: %d", s.cfg.MaxReconnectAttempts)
+			s.mu.Lock()
+			s.reconnecting = false
+			s.mu.Unlock()
+			s.notifyConnection(false, err)
+			return
+		}
+		timer := time.NewTimer(s.cfg.ReconnectInterval)
+		select {
+		case <-s.ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+
+		slog.Info("尝试重连远程 Server", "attempt", attempt)
+		client, err := s.connectClient()
+		if err != nil {
+			if terminalError, stopped := s.stopAfterTerminalError(err); stopped {
+				slog.Info("远程 Device 凭据已撤销，停止重连", "error", terminalError)
+				return
+			}
+			s.notifyConnection(false, err)
+			continue
+		}
+
+		s.mu.Lock()
+		if s.ctx.Err() != nil {
+			s.mu.Unlock()
+			_ = client.Close()
+			return
+		}
+		old := s.wsClient
+		s.wsClient = client
+		s.reconnecting = false
+		s.mu.Unlock()
+		if old != nil {
+			_ = old.Close()
+		}
+		if err := s.registerBridge(); err != nil {
+			s.mu.Lock()
+			if s.wsClient == client {
+				s.wsClient = nil
+			}
+			s.mu.Unlock()
+			_ = client.Close()
+			s.notifyConnection(false, err)
+			continue
+		}
+		s.notifyConnection(true, nil)
+		client.Start(s.ctx)
+		return
+	}
+}
+
+func (s *TunnelService) registerBridge() error {
+	agents := s.registry.ListDescriptors()
+	params, _ := json.Marshal(protocol.ANPBridgeRegister{
+		BridgeID: s.cfg.BridgeID,
+		Agents:   toANPAgents(agents),
+	})
+	message := &protocol.ANPMessage{
+		JSONRPC: "2.0",
+		Method:  "bridge/register",
+		Params:  params,
+	}
+	if err := s.sendJSON(message); err != nil {
+		slog.Warn("注册 Bridge 失败", "error", err)
+		return fmt.Errorf("注册 Bridge 失败: %w", err)
+	}
+	slog.Info("Bridge 注册成功", "bridge_id", s.cfg.BridgeID, "agents", len(agents))
 	return nil
 }
 
-// Stop 停止 TunnelService
-func (s *TunnelService) Stop() {
-	s.cancel()
-	if s.wsClient != nil {
-		s.wsClient.Close()
-	}
+func (s *TunnelService) startStatusRefreshLoop() {
+	s.refreshOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(s.cfg.StatusRefreshInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-s.ctx.Done():
+					return
+				case <-ticker.C:
+					if !s.canRefreshStatus() {
+						continue
+					}
+					if err := s.registerBridge(); err != nil {
+						slog.Debug("刷新 Agent 状态失败", "error", err)
+					}
+				}
+			}
+		}()
+	})
 }
 
-// registerBridge 向远程服务注册 Bridge 和可用 Agent 列表
-// Lzm 2026-07-09
-func (s *TunnelService) registerBridge() {
-	agents := s.registry.ListDescriptors()
-	msg := &protocol.ANPMessage{
-		JSONRPC: "2.0",
-		Method:  "bridge/register",
-		Params: func() json.RawMessage {
-			data, _ := json.Marshal(protocol.ANPBridgeRegister{
-				BridgeID: s.cfg.BridgeID,
-				Agents:   toANPAgents(agents),
-			})
-			return data
-		}(),
-	}
-
-	if err := s.wsClient.SendJSON(msg); err != nil {
-		slog.Error("注册 Bridge 失败", "error", err)
-	} else {
-		slog.Info("Bridge 注册成功",
-			"bridge_id", s.cfg.BridgeID,
-			"agents", len(agents),
-		)
-	}
+func (s *TunnelService) canRefreshStatus() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.wsClient != nil && !s.reconnecting && s.terminalErr == nil
 }
 
-// handleMessage 处理从远程服务收到的 WebSocket 消息
-// Lzm 2026-07-09
+func classifyTerminalConnectionError(err error) error {
+	if errors.Is(err, ErrConnectionReplaced) || errors.Is(err, ErrCredentialsRevoked) {
+		return err
+	}
+	if infra.IsWebSocketClose(err, connectionReplacedCode, connectionReplacedReason) {
+		return fmt.Errorf("%w: %v", ErrConnectionReplaced, err)
+	}
+	if infra.IsWebSocketClose(err, connectionReplacedCode, deviceDeletedReason) ||
+		infra.IsWebSocketHandshakeStatus(err, http.StatusUnauthorized, http.StatusForbidden) {
+		return fmt.Errorf("%w: %v", ErrCredentialsRevoked, err)
+	}
+	return nil
+}
+
+// stopAfterTerminalError records a non-recoverable connection failure exactly
+// once and reports it to the Local Console. It is used for rejected handshakes;
+// active-socket closes must first verify the client identity in
+// handleConnectionError.
+func (s *TunnelService) stopAfterTerminalError(err error) (error, bool) {
+	terminalError := classifyTerminalConnectionError(err)
+	if terminalError == nil {
+		return nil, false
+	}
+
+	s.mu.Lock()
+	if s.ctx.Err() != nil {
+		s.mu.Unlock()
+		return nil, false
+	}
+	if s.terminalErr != nil {
+		terminalError = s.terminalErr
+		s.mu.Unlock()
+		return terminalError, true
+	}
+	s.terminalErr = terminalError
+	s.reconnecting = false
+	s.mu.Unlock()
+
+	s.notifyConnection(false, terminalError)
+	return terminalError, true
+}
+
 func (s *TunnelService) handleMessage(data []byte) {
-	var anpMsg protocol.ANPMessage
-	if err := json.Unmarshal(data, &anpMsg); err != nil {
+	var message protocol.ANPMessage
+	if err := json.Unmarshal(data, &message); err != nil {
 		slog.Warn("收到无效 ANP 消息", "error", err)
 		return
 	}
+	// WSClient invokes this callback from its read loop. Agent startup and
+	// blocking calls must not stop that loop from reading pongs or independent
+	// JSON-RPC messages, otherwise one slow Agent can tear down the tunnel.
+	go s.routeMessage(message)
+}
 
-	slog.Debug("收到远程服务消息",
-		"method", anpMsg.Method,
-		"id", anpMsg.ID,
-	)
-
-	// 路由到对应处理器
-	response := s.router.Route(s.ctx, &anpMsg, s.sessionMgr)
-
-	// 如果有响应，发送回远程服务
-	if response != nil && s.wsClient != nil {
-		if err := s.wsClient.SendJSON(response); err != nil {
-			slog.Error("发送响应到远程服务失败",
-				"id", response.ID,
-				"error", err,
-			)
+func (s *TunnelService) routeMessage(message protocol.ANPMessage) {
+	response := s.router.Route(s.ctx, &message, s.sessions)
+	if response != nil {
+		if err := s.sendJSON(response); err != nil {
+			if errors.Is(err, errANPDeviceMessageTooLarge) {
+				_ = s.sendJSON(protocol.NewErrorResponse(response.ID, protocol.ANPErrorResponseTooLarge,
+					fmt.Sprintf("Device response exceeds the %d-byte transport limit", protocol.MaxANPDeviceMessageBytes)))
+			}
+			slog.Warn("发送远程响应失败", "id", response.ID, "error", err)
 		}
 	}
 }
 
-// reconnectLoop 自动重连循环
-// Lzm 2026-07-09
-func (s *TunnelService) reconnectLoop() {
-	attempt := 0
-	for {
-		select {
-		case <-s.ctx.Done():
-			return
-		case <-time.After(s.cfg.ReconnectInterval):
-			attempt++
-			if s.cfg.MaxReconnectAttempts > 0 && attempt > s.cfg.MaxReconnectAttempts {
-				slog.Error("重连次数已达上限", "max_attempts", s.cfg.MaxReconnectAttempts)
-				return
-			}
+func (s *TunnelService) sendJSON(value any) error {
+	s.mu.RLock()
+	client := s.wsClient
+	s.mu.RUnlock()
+	if client == nil {
+		return fmt.Errorf("WebSocket 未连接")
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("序列化 ANP 消息失败: %w", err)
+	}
+	if len(payload) > protocol.MaxANPDeviceMessageBytes {
+		return fmt.Errorf("%w: got %d bytes, maximum is %d", errANPDeviceMessageTooLarge, len(payload), protocol.MaxANPDeviceMessageBytes)
+	}
+	return client.SendText(payload)
+}
 
-			slog.Info("尝试重连...", "attempt", attempt)
-
-			// 重建 WebSocket 连接
-			header := make(http.Header)
-			header.Set("X-Bridge-Id", s.cfg.BridgeID)
-
-			// 动态获取 agent ID 列表
-			agentIDs := make([]string, 0)
-			for _, a := range s.registry.List() {
-				agentIDs = append(agentIDs, a.ID())
-			}
-			header.Set("X-Agent-Ids", strings.Join(agentIDs, ","))
-			if s.cfg.Token != "" {
-				header.Set("Authorization", "Bearer "+s.cfg.Token)
-			}
-
-			wsCfg := infra.WSClientConfig{
-				URL:    s.cfg.ServerURL,
-				Header: header,
-				OnMessage: func(data []byte) {
-					s.handleMessage(data)
-				},
-				OnError: func(err error) {
-					slog.Error("WebSocket 错误（重连后）", "error", err)
-				},
-			}
-
-			client, err := infra.NewWSClient(s.ctx, wsCfg)
-			if err != nil {
-				slog.Warn("重连失败", "error", err)
-				continue
-			}
-
-			// 替换 wsClient
-			old := s.wsClient
-			s.wsClient = client
-			if old != nil {
-				old.Close()
-			}
-
-			s.registerBridge()
-			return
-		}
+func (s *TunnelService) notifyConnection(connected bool, err error) {
+	if s.cfg.OnConnectionChange != nil {
+		s.cfg.OnConnectionChange(connected, err)
 	}
 }
 
-// toANPAgents 将 AgentDescriptor 转为 ANPAgent 列表
 func toANPAgents(descriptors []agent.AgentDescriptor) []protocol.ANPAgent {
 	result := make([]protocol.ANPAgent, len(descriptors))
-	for i, d := range descriptors {
-		result[i] = protocol.ANPAgent{
-			AgentID:     d.AgentID,
-			DisplayName: d.DisplayName,
-			Status:      d.Status,
+	for index, descriptor := range descriptors {
+		result[index] = protocol.ANPAgent{
+			AgentID:     descriptor.AgentID,
+			DisplayName: descriptor.DisplayName,
+			Status:      descriptor.Status,
 		}
 	}
 	return result

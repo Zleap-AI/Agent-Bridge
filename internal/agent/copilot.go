@@ -36,31 +36,10 @@ func NewCopilotAgent(meta AgentMeta) *CopilotAgent {
 
 // Start 启动 Copilot CLI 进程并完成 ACP 握手
 // Copilot CLI 使用 --acp 标志启动 ACP 协议模式
-// 注意：必须使用父 ctx 启动进程（非 timeout ctx），否则 Start 返回后进程被杀死
+// 进程生命周期由 Stop 管理，ctx 只约束启动与握手
 // Lzm 2026-07-11
 func (a *CopilotAgent) Start(ctx context.Context) error {
-	if a.Status() != AgentDisconnected {
-		return fmt.Errorf("agent %s 已启动，当前状态: %s", a.meta.ID, a.Status())
-	}
-
-	// 1. 启动子进程（使用父 ctx，进程需要长期运行）
-	if err := a.startProcess(ctx); err != nil {
-		return err
-	}
-
-	// 2. 启动后台读取协程
-	a.startReadLoop(ctx)
-
-	// 3. ACP 握手（握手阶段使用 timeout，防止卡死）
-	startCtx, cancel := context.WithTimeout(ctx, a.meta.StartupTimeout)
-	defer cancel()
-	if err := a.doHandshake(startCtx); err != nil {
-		a.Stop(ctx)
-		return err
-	}
-
-	a.setStatus(AgentIdle)
-	return nil
+	return a.start(ctx, nil)
 }
 
 // Send 发送请求并等待完整响应

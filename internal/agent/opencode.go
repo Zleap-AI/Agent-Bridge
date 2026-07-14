@@ -16,11 +16,8 @@
 package agent
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"log/slog"
-	"os/exec"
 	"runtime"
 	"strconv"
 	"time"
@@ -46,58 +43,16 @@ func NewOpenCodeAgent(meta AgentMeta) *OpenCodeAgent {
 }
 
 // Start 启动 OpenCode 进程并完成 ACP 握手
-// 注意：必须使用父 ctx 启动进程（非 timeout ctx），否则 Start 返回后进程被杀死
+// 进程生命周期由 Stop 管理，ctx 只约束启动与握手
 // Lzm 2026-07-10
 func (a *OpenCodeAgent) Start(ctx context.Context) error {
-	if a.Status() != AgentDisconnected {
-		return fmt.Errorf("agent %s 已启动，当前状态: %s", a.meta.ID, a.Status())
-	}
-
 	// macOS：opencode acp 启动 WebSocket 服务端，走 WebSocket ACP
 	if runtime.GOOS == "darwin" {
 		return a.startMacOS(ctx)
 	}
 
-	// Windows/Linux：标准 stdin/stdout ACP
-	return a.startStdio(ctx)
-}
-
-// startStdio 标准 stdin/stdout ACP 模式（Windows / Linux）
-// Lzm 2026-07-10
-func (a *OpenCodeAgent) startStdio(ctx context.Context) error {
-	// 预检：快速验证 ACP 子命令是否存在
-	diagCtx, diagCancel := context.WithTimeout(ctx, 3*time.Second)
-	var diagOut bytes.Buffer
-	diagCmd := exec.CommandContext(diagCtx, a.meta.Cmd, append(a.meta.Args, "--help")...)
-	diagCmd.Stdout = &diagOut
-	diagCmd.Stderr = &diagOut
-	_ = diagCmd.Run()
-	diagCancel()
-	if diagOut.Len() > 0 {
-		slog.Debug("OpenCode ACP 诊断输出",
-			"agent", a.meta.ID,
-			"output", diagOut.String(),
-		)
-	}
-
-	// 1. 启动子进程（使用父 ctx，进程需要长期运行）
-	if err := a.startProcess(ctx); err != nil {
-		return err
-	}
-
-	// 2. 启动后台读取协程
-	a.startReadLoop(ctx)
-
-	// 3. ACP 握手（握手阶段使用 timeout）
-	startCtx, cancel := context.WithTimeout(ctx, a.meta.StartupTimeout)
-	defer cancel()
-	if err := a.doHandshake(startCtx); err != nil {
-		a.Stop(ctx)
-		return err
-	}
-
-	a.setStatus(AgentIdle)
-	return nil
+	// Windows/Linux：标准 stdin/stdout ACP，委托 baseAgent.start 管理生命周期
+	return a.start(ctx, nil)
 }
 
 // startMacOS macOS 用 WebSocket ACP 模式
@@ -137,28 +92,11 @@ func (a *OpenCodeAgent) startMacOS(ctx context.Context) error {
 		return fmt.Errorf("连接 opencode WebSocket ACP 失败: %w", err)
 	}
 
-	// 5. 设置 WS 适配器
+	// 5. 设置 WS 适配器，委托 baseAgent.start 完成后续生命周期管理（握手 + 状态切换）
 	a.wsAdapter = adapter
 
-	// 6. 启动进程（将使用 WS 适配器）
-	if err := a.startProcess(ctx); err != nil {
-		adapter.Close()
-		return err
-	}
-
-	// 7. 启动后台读取协程
-	a.startReadLoop(ctx)
-
-	// 8. ACP 握手（握手阶段使用 timeout）
-	startCtx, cancel := context.WithTimeout(ctx, a.meta.StartupTimeout)
-	defer cancel()
-	if err := a.doHandshake(startCtx); err != nil {
-		a.Stop(ctx)
-		return err
-	}
-
-	a.setStatus(AgentIdle)
-	return nil
+	// 6. baseAgent.start 会检测 wsAdapter != nil 并走 WebSocket 模式
+	return a.start(ctx, nil)
 }
 
 // Send 发送请求并等待完整响应

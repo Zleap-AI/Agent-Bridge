@@ -19,7 +19,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 )
 
 // StoredMessage 持久化存储的消息
@@ -60,14 +59,15 @@ func DefaultMessageStore() *MessageStore {
 	return NewMessageStore(storeDir)
 }
 
-// getSessionFile 获取会话消息文件路径（session/ 目录）
-// 兼容 Python 版的 _get_session_file()：将特殊字符替换为 _
+// getSessionFile returns the collision-resistant metadata path for a Session.
 func (ms *MessageStore) getSessionFile(agentID, sessionID string) string {
 	dir := filepath.Join(ms.storeDir, agentID, "sessions")
-	safeID := strings.NewReplacer(
-		"/", "_", "\\", "_", ":", "_",
-	).Replace(sessionID)
-	return filepath.Join(dir, safeID+".json")
+	return filepath.Join(dir, safeSessionFileID(sessionID)+".json")
+}
+
+func (ms *MessageStore) getLegacySessionFile(agentID, sessionID string) string {
+	dir := filepath.Join(ms.storeDir, agentID, "sessions")
+	return filepath.Join(dir, legacySessionFileID(sessionID)+".json")
 }
 
 // getMessageFile 获取消息文件路径（messages/ 目录）
@@ -75,26 +75,45 @@ func (ms *MessageStore) getSessionFile(agentID, sessionID string) string {
 // Lzm 2026-07-10
 func (ms *MessageStore) getMessageFile(agentID, sessionID string) string {
 	dir := filepath.Join(ms.storeDir, agentID, "messages")
-	safeID := strings.NewReplacer(
-		"/", "_", "\\", "_", ":", "_",
-	).Replace(sessionID)
-	return filepath.Join(dir, safeID+".json")
+	return filepath.Join(dir, safeSessionFileID(sessionID)+".json")
+}
+
+func (ms *MessageStore) getLegacyMessageFile(agentID, sessionID string) string {
+	dir := filepath.Join(ms.storeDir, agentID, "messages")
+	return filepath.Join(dir, legacySessionFileID(sessionID)+".json")
 }
 
 // SaveMessages 保存消息到消息文件
-// 去重策略：按 (role, text) 二元组去重（与 Python 版一致）
+// 调用方传入的是新产生的消息，因此始终按顺序追加，包括内容完全相同的消息。
 // 存储路径：messages/{session_id}.json（与会话元数据分目录）
 // Lzm 2026-07-10
 func (ms *MessageStore) SaveMessages(agentID, sessionID string, messages []StoredMessage) {
 	if len(messages) == 0 {
 		return
 	}
+	existing := ms.LoadMessages(agentID, sessionID)
+	merged := make([]StoredMessage, 0, len(existing)+len(messages))
+	merged = append(merged, existing...)
+	merged = append(merged, messages...)
+	ms.writeMessages(agentID, sessionID, merged)
+}
 
+// SaveReplayedMessages 合并 Agent 回放的历史记录。Agent 可能先重复发送文件末尾
+// 已有的消息，因此这里只消除已有末尾与回放开头的最大重叠。
+func (ms *MessageStore) SaveReplayedMessages(agentID, sessionID string, messages []StoredMessage) {
+	if len(messages) == 0 {
+		return
+	}
+	existing := ms.LoadMessages(agentID, sessionID)
+	ms.writeMessages(agentID, sessionID, mergeMessagesAtBoundary(existing, messages))
+}
+
+func (ms *MessageStore) writeMessages(agentID, sessionID string, messages []StoredMessage) {
 	filePath := ms.getMessageFile(agentID, sessionID)
 
 	// 确保目录存在
 	dir := filepath.Dir(filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := ensurePrivateDirectory(dir); err != nil {
 		slog.Warn("创建会话目录失败",
 			"agent", agentID,
 			"error", err,
@@ -102,31 +121,14 @@ func (ms *MessageStore) SaveMessages(agentID, sessionID string, messages []Store
 		return
 	}
 
-	// 读取已有消息
-	existing := ms.LoadMessages(agentID, sessionID)
-
-	// 合并：已有 + 新增
-	merged := append(existing, messages...)
-
-	// 去重：按 (role, text) 去重
-	seen := make(map[string]bool)
-	unique := make([]StoredMessage, 0, len(merged))
-	for _, m := range merged {
-		key := m.Role + "\x00" + m.Text
-		if !seen[key] {
-			seen[key] = true
-			unique = append(unique, m)
-		}
-	}
-
 	// 写入文件
-	data, err := json.MarshalIndent(unique, "", "  ")
+	data, err := json.MarshalIndent(messages, "", "  ")
 	if err != nil {
 		slog.Warn("序列化消息失败", "error", err)
 		return
 	}
 
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
+	if err := writeFileAtomically(filePath, data, 0o600); err != nil {
 		slog.Warn("写入消息文件失败",
 			"path", filePath,
 			"error", err,
@@ -136,9 +138,38 @@ func (ms *MessageStore) SaveMessages(agentID, sessionID string, messages []Store
 
 	slog.Debug("消息已持久化",
 		"agent", agentID,
-		"session", sessionID[:16]+"...",
-		"count", len(unique),
+		"session", truncateString(sessionID, 16),
+		"count", len(messages),
 	)
+}
+
+// mergeMessagesAtBoundary removes the largest suffix/prefix overlap produced
+// when an Agent replays already-persisted history before returning new items.
+// It deliberately does not deduplicate the merged history globally: identical
+// messages at different positions are valid conversation data.
+func mergeMessagesAtBoundary(existing, incoming []StoredMessage) []StoredMessage {
+	overlap := len(existing)
+	if len(incoming) < overlap {
+		overlap = len(incoming)
+	}
+	for overlap > 0 {
+		matches := true
+		for i := 0; i < overlap; i++ {
+			if existing[len(existing)-overlap+i] != incoming[i] {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			break
+		}
+		overlap--
+	}
+
+	merged := make([]StoredMessage, 0, len(existing)+len(incoming)-overlap)
+	merged = append(merged, existing...)
+	merged = append(merged, incoming[overlap:]...)
+	return merged
 }
 
 // LoadMessages 从消息文件加载会话消息
@@ -146,40 +177,39 @@ func (ms *MessageStore) SaveMessages(agentID, sessionID string, messages []Store
 // 优先读取 messages/{session_id}.json，不存在时回退到 sessions/{session_id}.json（旧格式）
 // Lzm 2026-07-13
 func (ms *MessageStore) LoadMessages(agentID, sessionID string) []StoredMessage {
-	// 优先读取 messages/ 目录
-	filePath := ms.getMessageFile(agentID, sessionID)
-	data, err := os.ReadFile(filePath)
-	if err != nil {
+	type candidate struct {
+		path             string
+		mayBeSessionMeta bool
+	}
+	candidates := []candidate{
+		{path: ms.getMessageFile(agentID, sessionID)},
+		{path: ms.getLegacyMessageFile(agentID, sessionID)},
+		{path: ms.getLegacySessionFile(agentID, sessionID), mayBeSessionMeta: true},
+	}
+
+	var data []byte
+	var filePath string
+	for _, item := range candidates {
+		var err error
+		data, err = os.ReadFile(item.path)
 		if os.IsNotExist(err) {
-			// messages/ 不存在，回退到 sessions/ 目录（旧格式兼容）
-			filePath = ms.getSessionFile(agentID, sessionID)
-			data, err = os.ReadFile(filePath)
-			if err != nil {
-				if !os.IsNotExist(err) {
-					slog.Debug("读取旧消息文件失败",
-						"path", filePath,
-						"error", err,
-					)
-				}
-				return nil
-			}
-			// sessions/{sessionId}.json 可能是 StoredSession 元数据（非消息）
-			// 先尝试解析为 StoredSession，成功则说明是元数据文件，返回空消息
-			var meta StoredSession
-			if err := json.Unmarshal(data, &meta); err == nil && meta.SessionID != "" {
-				slog.Debug("会话文件为元数据格式，无消息数据",
-					"path", filePath,
-					"session_id", meta.SessionID,
-				)
-				return nil
-			}
-		} else {
-			slog.Debug("读取消息文件失败",
-				"path", filePath,
-				"error", err,
-			)
+			continue
+		}
+		if err != nil {
+			slog.Debug("读取消息文件失败", "path", item.path, "error", err)
 			return nil
 		}
+		filePath = item.path
+		if item.mayBeSessionMeta {
+			var meta StoredSession
+			if err := json.Unmarshal(data, &meta); err == nil && meta.SessionID != "" {
+				return nil
+			}
+		}
+		break
+	}
+	if filePath == "" {
+		return nil
 	}
 
 	// 兼容 Python 版输出的两种格式：
@@ -226,33 +256,65 @@ func (ms *MessageStore) ListSessions(agentID string, limit int) []SessionSummary
 		return nil
 	}
 
-	var summaries []SessionSummary
+	type sessionFile struct {
+		entry      os.DirEntry
+		path       string
+		data       []byte
+		stored     StoredSession
+		isMetadata bool
+	}
+	files := make([]sessionFile, 0, len(entries))
+	canonicalLegacyFiles := make(map[string]struct{})
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
 		}
-
 		path := filepath.Join(dir, entry.Name())
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
+		item := sessionFile{entry: entry, path: path, data: data}
+		if err := json.Unmarshal(data, &item.stored); err == nil {
+			item.isMetadata = true
+			if item.stored.SessionID != "" {
+				canonicalLegacyFiles[legacySessionFileID(item.stored.SessionID)+".json"] = struct{}{}
+			}
+		}
+		files = append(files, item)
+	}
 
+	bySessionID := make(map[string]SessionSummary)
+	addSummary := func(summary SessionSummary) {
+		if summary.SessionID == "" {
+			return
+		}
+		current, exists := bySessionID[summary.SessionID]
+		if !exists || summary.UpdatedAt > current.UpdatedAt {
+			bySessionID[summary.SessionID] = summary
+		}
+	}
+	for _, item := range files {
 		// 尝试解析为 StoredSession 格式（会话元数据）
-		var stored StoredSession
-		if err := json.Unmarshal(data, &stored); err != nil {
+		if !item.isMetadata {
 			// 兼容旧格式：尝试解析为 []StoredMessage（消息数组）
 			var messages []StoredMessage
-			if err2 := json.Unmarshal(data, &messages); err2 != nil {
+			if err := json.Unmarshal(item.data, &messages); err != nil {
+				continue
+			}
+			// Canonical metadata carries the opaque Session ID. A legacy Python
+			// array named from that ID is its message fallback, not a second
+			// filename-derived Session (for example a/b must not also list a_b).
+			if _, owned := canonicalLegacyFiles[item.entry.Name()]; owned {
 				continue
 			}
 			// 旧格式：用 mtime 作为时间，消息数组长度作为计数
-			info, err2 := os.Stat(path)
-			if err2 != nil {
+			info, err := os.Stat(item.path)
+			if err != nil {
 				continue
 			}
-			summaries = append(summaries, SessionSummary{
-				SessionID:    strings.TrimSuffix(entry.Name(), ".json"),
+			addSummary(SessionSummary{
+				SessionID:    strings.TrimSuffix(item.entry.Name(), ".json"),
 				MessageCount: len(messages),
 				UpdatedAt:    info.ModTime().Unix(),
 				CreatedAt:    info.ModTime().Unix(),
@@ -261,18 +323,26 @@ func (ms *MessageStore) ListSessions(agentID string, limit int) []SessionSummary
 		}
 
 		// 新格式 StoredSession：读取消息文件获取消息数
-		msgCount := ms.countMessages(agentID, stored.SessionID)
-		summaries = append(summaries, SessionSummary{
-			SessionID:    stored.SessionID,
+		msgCount := ms.countMessages(agentID, item.stored.SessionID)
+		addSummary(SessionSummary{
+			SessionID:    item.stored.SessionID,
 			MessageCount: msgCount,
-			UpdatedAt:    stored.UpdatedAt.Unix(),
-			CreatedAt:    stored.CreatedAt.Unix(),
+			UpdatedAt:    item.stored.UpdatedAt.Unix(),
+			CreatedAt:    item.stored.CreatedAt.Unix(),
 		})
 	}
+	summaries := make([]SessionSummary, 0, len(bySessionID))
+	for _, summary := range bySessionID {
+		summaries = append(summaries, summary)
+	}
 
-	// 按 UpdatedAt 降序排列
+	// 按 UpdatedAt 降序排列；持久化时间只有秒级精度，因此用 Session ID
+	// 作为稳定的次级键，确保同秒更新时分页和 limit 结果不会随机变化。
 	sort.Slice(summaries, func(i, j int) bool {
-		return summaries[i].UpdatedAt > summaries[j].UpdatedAt
+		if summaries[i].UpdatedAt != summaries[j].UpdatedAt {
+			return summaries[i].UpdatedAt > summaries[j].UpdatedAt
+		}
+		return summaries[i].SessionID < summaries[j].SessionID
 	})
 
 	if limit > 0 && len(summaries) > limit {
@@ -285,28 +355,21 @@ func (ms *MessageStore) ListSessions(agentID string, limit int) []SessionSummary
 // countMessages 统计 messages/{session_id}.json 中的消息数
 // Lzm 2026-07-10
 func (ms *MessageStore) countMessages(agentID, sessionID string) int {
-	data, err := os.ReadFile(ms.getMessageFile(agentID, sessionID))
-	if err != nil {
-		return 0
-	}
-	var raw []json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return 0
-	}
-	return len(raw)
+	return len(ms.LoadMessages(agentID, sessionID))
 }
 
 // DeleteSession 删除指定会话文件和消息文件
 func (ms *MessageStore) DeleteSession(agentID, sessionID string) error {
-	// 删除会话元数据文件
-	sessionPath := ms.getSessionFile(agentID, sessionID)
-	if err := os.Remove(sessionPath); err != nil && !os.IsNotExist(err) {
-		return err
+	paths := []string{
+		ms.getSessionFile(agentID, sessionID),
+		ms.getMessageFile(agentID, sessionID),
+		ms.getLegacySessionFile(agentID, sessionID),
+		ms.getLegacyMessageFile(agentID, sessionID),
 	}
-	// 删除消息文件
-	msgPath := ms.getMessageFile(agentID, sessionID)
-	if err := os.Remove(msgPath); err != nil && !os.IsNotExist(err) {
-		return err
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	return nil
 }
@@ -332,21 +395,4 @@ func (ms *MessageStore) GetAllSessions() map[string][]SessionSummary {
 	}
 
 	return result
-}
-
-// getMessageFileInfo 获取消息文件的元信息（用于 SessionManager 兼容）
-// Lzm 2026-07-10
-func (ms *MessageStore) getMessageFileInfo(agentID, sessionID string) (msgCount int, modTime time.Time) {
-	messages := ms.LoadMessages(agentID, sessionID)
-	if messages == nil {
-		return 0, time.Time{}
-	}
-
-	filePath := ms.getMessageFile(agentID, sessionID)
-	info, err := os.Stat(filePath)
-	if err != nil {
-		return len(messages), time.Now()
-	}
-
-	return len(messages), info.ModTime()
 }

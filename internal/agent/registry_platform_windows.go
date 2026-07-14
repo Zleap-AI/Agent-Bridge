@@ -11,11 +11,54 @@
 package agent
 
 import (
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	return err
+}
+
+func copyDir(src, dst string) error {
+	if err := os.MkdirAll(dst, 0755); err != nil {
+		return err
+	}
+
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			if err := copyDir(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else if err := copyFile(srcPath, dstPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // getExtraSearchPaths 返回 Windows 特有的可执行文件搜索路径
 // Lzm 2026-07-13
@@ -23,7 +66,16 @@ func getExtraSearchPaths() []string {
 	home, _ := os.UserHomeDir()
 	return []string{
 		filepath.Join(home, "AppData", "Roaming", "npm"),
-		os.Getenv("APPDATA") + "\\npm",
+		envSubdir("APPDATA", "npm"),
+		os.Getenv("NVM_SYMLINK"),
+		os.Getenv("NVM_HOME"),
+		envSubdir("VOLTA_HOME", "bin"),
+		envSubdir("MISE_DATA_DIR", "shims"),
+		filepath.Join(home, ".volta", "bin"),
+		filepath.Join(home, ".local", "share", "mise", "shims"),
+		filepath.Join(home, ".asdf", "shims"),
+		envSubdir("ProgramFiles", "nodejs"),
+		envSubdir("LOCALAPPDATA", "Programs", "nodejs"),
 		filepath.Join(home, ".local", "bin"),                             // WSL/Cursor CLI 安装路径
 		filepath.Join(home, "AppData", "Local", "Cursor"),                // Cursor Windows 路径
 		filepath.Join(home, "AppData", "Local", "cursor-agent"),          // Cursor Agent CLI 安装路径
@@ -33,18 +85,35 @@ func getExtraSearchPaths() []string {
 	}
 }
 
+func envSubdir(name string, children ...string) string {
+	root := os.Getenv(name)
+	if root == "" {
+		return ""
+	}
+	return filepath.Join(append([]string{root}, children...)...)
+}
+
 // getExecutableExtensions 返回 Windows 可执行文件扩展名列表（来自 PATHEXT）
 // Windows 上优先匹配 .cmd/.exe/.bat，无扩展名放最后（npm 会同时生成 .cmd 和 无扩展名脚本）
 // Lzm 2026-07-13
 func getExecutableExtensions() []string {
 	pathext := os.Getenv("PATHEXT")
-	if pathext == "" {
-		return []string{".exe", ".cmd", ".bat", ".com"}
+	supported := map[string]bool{
+		".exe": true,
+		".cmd": true,
+		".bat": true,
+		".com": true,
 	}
-	exts := []string{}
+	var exts []string
 	for _, ext := range strings.Split(strings.ToLower(pathext), ";") {
-		ext = strings.TrimSpace(ext)
-		if ext != "" {
+		ext = normalizeExecutableExtension(ext)
+		if supported[ext] {
+			exts = append(exts, ext)
+			delete(supported, ext)
+		}
+	}
+	for _, ext := range []string{".exe", ".cmd", ".bat", ".com"} {
+		if supported[ext] {
 			exts = append(exts, ext)
 		}
 	}
