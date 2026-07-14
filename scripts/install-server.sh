@@ -112,28 +112,90 @@ format_url_host() {
   fi
 }
 
-is_public_ip() {
-  local ip="${1,,}" first second
-  ip="${ip#[}"
-  ip="${ip%]}"
-  if [[ "$ip" == *:* ]]; then
-    case "$ip" in
-      ::|::1|fc*|fd*|fe8*|fe9*|fea*|feb*) return 1 ;;
-      *) return 0 ;;
-    esac
-  fi
-  IFS=. read -r first second _ _ <<<"$ip"
-  [[ "$first" =~ ^[0-9]+$ && "$second" =~ ^[0-9]+$ ]] || return 1
+is_valid_ipv4() {
+  local ip="$1" octet
+  local -a octets
+  [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  IFS=. read -r -a octets <<<"$ip"
+  [[ "${#octets[@]}" -eq 4 ]] || return 1
+  for octet in "${octets[@]}"; do
+    [[ "$octet" == "0" || "$octet" != 0* ]] || return 1
+    (( 10#$octet <= 255 )) || return 1
+  done
+}
+
+is_public_ipv4() {
+  local ip="$1" first second third
+  is_valid_ipv4 "$ip" || return 1
+  IFS=. read -r first second third _ <<<"$ip"
   (( first > 0 && first < 224 )) || return 1
   case "$first" in
     10|127) return 1 ;;
     100) (( second < 64 || second > 127 )) || return 1 ;;
     169) (( second != 254 )) || return 1 ;;
     172) (( second < 16 || second > 31 )) || return 1 ;;
-    192) (( second != 0 && second != 168 )) || return 1 ;;
-    198) (( second != 18 && second != 19 )) || return 1 ;;
+    192)
+      (( second != 168 )) || return 1
+      (( second != 0 || (third != 0 && third != 2) )) || return 1
+      (( second != 88 || third != 99 )) || return 1
+      ;;
+    198)
+      (( second != 18 && second != 19 )) || return 1
+      (( second != 51 || third != 100 )) || return 1
+      ;;
+    203) (( second != 0 || third != 113 )) || return 1 ;;
   esac
   return 0
+}
+
+is_public_ip() {
+  local ip="${1,,}"
+  ip="${ip#[}"
+  ip="${ip%]}"
+  if [[ "$ip" == *:* ]]; then
+    [[ "$ip" =~ ^[0-9a-f:]+$ ]] || return 1
+    case "$ip" in
+      ::|::1|fc*|fd*|fe8*|fe9*|fea*|feb*|2001:db8:*) return 1 ;;
+      *) return 0 ;;
+    esac
+  fi
+  is_public_ipv4 "$ip"
+}
+
+fetch_public_ipv4() {
+  local url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -4fsS --proto '=https' --proto-redir '=https' \
+      --connect-timeout 2 --max-time 4 "$url"
+  else
+    wget -4q --https-only --tries=1 --timeout=4 -O - "$url"
+  fi
+}
+
+detect_public_host() {
+  local listen_host="$1" candidate response url
+  local -a candidates=("$listen_host") interface_addresses=()
+  if command -v hostname >/dev/null 2>&1; then
+    read -r -a interface_addresses <<<"$(hostname -I 2>/dev/null || true)"
+    candidates+=("${interface_addresses[@]}")
+  fi
+  for candidate in "${candidates[@]}"; do
+    if is_public_ip "$candidate"; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  for url in \
+    "https://checkip.amazonaws.com/" \
+    "https://api.ipify.org"; do
+    response="$(fetch_public_ipv4 "$url" 2>/dev/null || true)"
+    if is_public_ipv4 "$response"; then
+      printf '%s\n' "$response"
+      return 0
+    fi
+  done
+  return 1
 }
 
 fetch_health() {
@@ -223,6 +285,12 @@ for path_value in "$data_dir" "$database_path" "$config_dir" "$binary_path"; do
   [[ "$path_value" != *[[:space:]]* ]] || fail "installation paths must not contain whitespace"
 done
 [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "invalid AGENT_BRIDGE_REPOSITORY"
+
+listen_port="${listen_addr##*:}"
+listen_host="${listen_addr%:*}"
+listen_host="${listen_host#[}"
+listen_host="${listen_host%]}"
+[[ "$listen_port" =~ ^[0-9]+$ ]] || fail "could not determine port from ${listen_addr}"
 
 machine="$(uname -m)"
 case "$machine" in
@@ -417,6 +485,23 @@ if [[ "$env_existed" == true ]]; then
 else
   : >"${tmp_dir}/server.env"
 fi
+
+public_url_is_placeholder=false
+if [[ -z "$public_url" ]]; then
+  log "Detecting public IP"
+  advertised_host="$(detect_public_host "$listen_host" || true)"
+  if [[ -n "$advertised_host" ]]; then
+    public_scheme="http"
+    existing_tls_cert="$(read_env_value AGENT_BRIDGE_TLS_CERT_FILE "${tmp_dir}/server.env" || true)"
+    existing_tls_key="$(read_env_value AGENT_BRIDGE_TLS_KEY_FILE "${tmp_dir}/server.env" || true)"
+    if [[ -n "$existing_tls_cert" && -n "$existing_tls_key" ]]; then
+      public_scheme="https"
+    fi
+    public_url="${public_scheme}://$(format_url_host "$advertised_host"):${listen_port}"
+    log "Detected public address: ${public_url}"
+  fi
+fi
+
 upsert_env_value "${tmp_dir}/server.env" AGENT_BRIDGE_LISTEN_ADDR "$listen_addr"
 upsert_env_value "${tmp_dir}/server.env" AGENT_BRIDGE_DATA_DIR "$data_dir"
 upsert_env_value "${tmp_dir}/server.env" AGENT_BRIDGE_DATABASE_PATH "$database_path"
@@ -466,11 +551,6 @@ systemctl daemon-reload
 systemctl enable "$service_name" >/dev/null
 systemctl restart "$service_name"
 
-listen_port="${listen_addr##*:}"
-listen_host="${listen_addr%:*}"
-listen_host="${listen_host#[}"
-listen_host="${listen_host%]}"
-[[ "$listen_port" =~ ^[0-9]+$ ]] || fail "could not determine health-check port from ${listen_addr}"
 case "$listen_host" in
   ""|0.0.0.0|::) health_host="127.0.0.1" ;;
   *) health_host="$(format_url_host "$listen_host")" ;;
@@ -506,20 +586,9 @@ fi
 
 install_succeeded=true
 
-public_url_is_placeholder=false
 if [[ -z "$public_url" ]]; then
-  advertised_host=""
-  for candidate in "$listen_host" $(hostname -I 2>/dev/null || true); do
-    if is_public_ip "$candidate"; then
-      advertised_host="$(format_url_host "$candidate")"
-      break
-    fi
-  done
-  if [[ -z "$advertised_host" ]]; then
-    advertised_host="SERVER_PUBLIC_IP"
-    public_url_is_placeholder=true
-  fi
-  public_url="${health_scheme}://${advertised_host}:${listen_port}"
+  public_url="${health_scheme}://SERVER_PUBLIC_IP:${listen_port}"
+  public_url_is_placeholder=true
 fi
 
 log "Installed Agent-Bridge Server ${version}"

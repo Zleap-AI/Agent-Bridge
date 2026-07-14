@@ -36,6 +36,10 @@ write_mock_commands() {
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ -n "${MOCK_CURL_CALLS:-}" ]]; then
+  printf '%s\n' "$*" >>"${MOCK_CURL_CALLS}"
+fi
+
 output=""
 url=""
 while [[ "$#" -gt 0 ]]; do
@@ -73,6 +77,16 @@ if [[ -n "$output" ]]; then
 fi
 
 case "$url" in
+  https://checkip.amazonaws.com/)
+    [[ "${MOCK_PUBLIC_IP_PRIMARY_FAIL:-}" != "true" ]] || exit 22
+    printf '%s\n' "${MOCK_PUBLIC_IP_PRIMARY:-8.8.4.4}"
+    exit 0
+    ;;
+  https://api.ipify.org)
+    [[ "${MOCK_PUBLIC_IP_FALLBACK_FAIL:-}" != "true" ]] || exit 22
+    printf '%s\n' "${MOCK_PUBLIC_IP_FALLBACK:-1.1.1.1}"
+    exit 0
+    ;;
   */health)
     kind=local
     binary="${MOCK_LOCAL_BINARY}"
@@ -147,6 +161,16 @@ if [[ -n "$output" && "$output" != "-" ]]; then
 fi
 
 case "$url" in
+  https://checkip.amazonaws.com/)
+    [[ "${MOCK_PUBLIC_IP_PRIMARY_FAIL:-}" != "true" ]] || exit 22
+    printf '%s\n' "${MOCK_PUBLIC_IP_PRIMARY:-8.8.4.4}"
+    exit 0
+    ;;
+  https://api.ipify.org)
+    [[ "${MOCK_PUBLIC_IP_FALLBACK_FAIL:-}" != "true" ]] || exit 22
+    printf '%s\n' "${MOCK_PUBLIC_IP_FALLBACK:-1.1.1.1}"
+    exit 0
+    ;;
   */health)
     kind=local
     binary="${MOCK_LOCAL_BINARY}"
@@ -399,7 +423,7 @@ run_server_tests() {
   local database="${data}/agent-bridge.db"
   local unit="/etc/systemd/system/agent-bridge-server.service"
   local installer="/repo/scripts/install-server.sh"
-  local common status backup_count
+  local common status backup_count install_output
   local binary_before env_before unit_before db_before wal_before shm_before
 
   mkdir -p "$state" /etc/systemd/system
@@ -425,6 +449,8 @@ run_server_tests() {
   [[ "$(id -gn agent-bridge)" == "agent-bridge" ]] || fail 'Server user did not reuse the existing service group'
   assert_file_contains "$binary" 'VERSION=0.4.0' 'Server first install did not install requested version'
   assert_file_contains "$env_file" 'AGENT_BRIDGE_LISTEN_ADDR=127.0.0.1:19301' 'Server listen address missing'
+  assert_file_contains "$env_file" 'AGENT_BRIDGE_PUBLIC_URL=http://8.8.4.4:19301' \
+    'Server did not persist the automatically detected public IP'
   assert_file_contains "$unit" 'UMask=0077' 'Server unit does not protect service-created files'
   assert_mode 700 "$data"
   assert_mode 700 "$config"
@@ -438,6 +464,36 @@ run_server_tests() {
   assert_file_contains "$binary" 'VERSION=0.4.1' 'Server upgrade did not install requested version'
   assert_file_contains "$env_file" 'AGENT_BRIDGE_LISTEN_ADDR=127.0.0.1:19301' 'Server upgrade replaced custom listen address'
   [[ "$(grep -c '^AGENT_BRIDGE_LISTEN_ADDR=' "$env_file")" -eq 1 ]] || fail 'Server env contains duplicate listen addresses'
+  assert_file_contains "$env_file" 'AGENT_BRIDGE_PUBLIC_URL=http://8.8.4.4:19301' \
+    'Server upgrade did not preserve the detected public URL'
+
+  log "${TEST_IMAGE}: Server falls back when the first public IP service fails"
+  sed -i '/^AGENT_BRIDGE_PUBLIC_URL=/d' "$env_file"
+  env "${common[@]}" MOCK_PUBLIC_IP_PRIMARY_FAIL=true MOCK_PUBLIC_IP_FALLBACK=9.9.9.9 \
+    AGENT_BRIDGE_VERSION=v0.4.1 bash "$installer"
+  assert_file_contains "$env_file" 'AGENT_BRIDGE_PUBLIC_URL=http://9.9.9.9:19301' \
+    'Server did not use the fallback public IP service'
+
+  log "${TEST_IMAGE}: Server rejects invalid public IP responses and keeps a manual fallback"
+  sed -i '/^AGENT_BRIDGE_PUBLIC_URL=/d' "$env_file"
+  install_output="$(env "${common[@]}" MOCK_PUBLIC_IP_PRIMARY=10.0.0.8 \
+    MOCK_PUBLIC_IP_FALLBACK='not-an-ip' AGENT_BRIDGE_VERSION=v0.4.1 \
+    bash "$installer" 2>&1)"
+  if grep -q '^AGENT_BRIDGE_PUBLIC_URL=' "$env_file"; then
+    fail 'Server persisted an invalid or private public IP response'
+  fi
+  grep -Fq 'Replace SERVER_PUBLIC_IP' <<<"$install_output" ||
+    fail 'Server did not explain the manual public IP fallback'
+
+  log "${TEST_IMAGE}: Explicit Server public URL bypasses automatic detection"
+  : >"${MOCK_CURL_CALLS}"
+  env "${common[@]}" AGENT_BRIDGE_PUBLIC_URL=https://bridge.example.com \
+    AGENT_BRIDGE_VERSION=v0.4.1 bash "$installer"
+  assert_file_contains "$env_file" 'AGENT_BRIDGE_PUBLIC_URL=https://bridge.example.com' \
+    'Server did not prefer the explicitly configured public URL'
+  if grep -Eq 'checkip\.amazonaws\.com|api\.ipify\.org' "$MOCK_CURL_CALLS"; then
+    fail 'Server queried public IP services despite an explicit public URL'
+  fi
 
   printf 'sqlite-before-failed-upgrade\n' >"$database"
   printf 'wal-before-failed-upgrade\n' >"${database}-wal"
@@ -480,9 +536,10 @@ run_wget_latest_tests() {
   local root="$1"
   local home="${root}/local-home"
   local local_binary="${home}/.local/bin/agent-bridge"
-  local server_binary="/usr/local/bin/agent-bridge-server-installer-test"
-  local config="/etc/agent-bridge-installer-test"
-  local data="/var/lib/agent-bridge-installer-test"
+  local server_binary="/usr/local/bin/agent-bridge-server-installer-wget-test"
+  local config="/etc/agent-bridge-installer-wget-test"
+  local env_file="${config}/server.env"
+  local data="/var/lib/agent-bridge-installer-wget-test"
   local database="${data}/agent-bridge.db"
   local wget_calls="${root}/wget-calls.log"
   local common
@@ -521,8 +578,12 @@ run_wget_latest_tests() {
     MOCK_LOCAL_BINARY="${root}/unused-local" \
     env "${common[@]}" /bin/bash /repo/scripts/install-server.sh
   assert_file_contains "$server_binary" 'VERSION=0.4.2' 'Server wget-only latest did not resolve v0.4.2'
+  assert_file_contains "$env_file" 'AGENT_BRIDGE_PUBLIC_URL=http://8.8.4.4:9201' \
+    'Server wget-only install did not persist the detected public IP'
   assert_file_contains "$wget_calls" '--server-response --spider https://github.com/example/Agent-Bridge/releases/latest' \
     'wget-only latest resolution was not exercised'
+  assert_file_contains "$wget_calls" 'https://checkip.amazonaws.com/' \
+    'wget-only public IP detection was not exercised'
 
   unset -f command
 }
@@ -544,6 +605,7 @@ run_inside_container() {
   write_mock_commands "$mock_bin"
   export PATH="${mock_bin}:${PATH}"
   export MOCK_RELEASE_DIR="$fixture_dir"
+  export MOCK_CURL_CALLS="${root}/curl-calls.log"
   export MOCK_WGET_CALLS="${root}/wget-calls.log"
 
   run_local_tests "$root"

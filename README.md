@@ -17,10 +17,8 @@
 
 <p align="center">
   <a href="#项目介绍">项目介绍</a> ·
-  <a href="#支持的-agent">支持的 Agent</a> ·
-  <a href="#快速开始">快速开始</a> ·
-  <a href="#远程连接">远程连接</a> ·
-  <a href="#caller-api">Caller API</a>
+  <a href="#用户指南">用户指南</a> ·
+  <a href="#开发者指南">开发者指南</a>
 </p>
 
 ---
@@ -60,113 +58,178 @@ Local 可以完全脱离 Server 使用。需要远程调用时，Local 主动建
 - Server 使用 SQLite 保存 Device、凭证和最近 1000 条无正文调用记录。
 - Server 离线不会影响 Local Console 和本地调用。
 
----
+### 支持的 Agent
 
-## 支持的 Agent
+目前支持以下 11 个 Agent。Local 启动后只显示当前电脑实际安装并检测到的 Agent。
 
-代码中已实现以下 11 个 Agent 适配器。启动时只显示当前电脑实际检测到的 Agent。
+| Agent | 使用前提 | 状态 |
+| --- | --- | --- |
+| Claude Code | 已安装并能正常使用 Claude Code | ✅ |
+| OpenCode | 已安装支持 ACP 的 OpenCode | ✅ |
+| Codex | 已安装并能正常使用 Codex | ✅ |
+| Hermes | 已安装 Hermes CLI | ✅ |
+| Kimi | 已安装 Kimi CLI | ✅ |
+| Gemini | 已安装 Gemini CLI | ✅ |
+| GitHub Copilot | 已安装 Copilot CLI | ✅ |
+| Pi | 已安装 Pi ACP 适配器 | ✅ |
+| Cursor | 已安装 Cursor Agent CLI | ✅ |
+| GLM | 已安装 GLM ACP 适配器 | ✅ |
+| OpenClaw | Gateway 正常运行且模型鉴权有效 | ✅ |
 
-| Agent | 检测的本地命令 | ACP 启动方式 | 使用前提 | 状态 |
-| --- | --- | --- | --- | --- |
-| Claude Code | `claude-agent-acp` | `claude-agent-acp` | 已安装 `claude`；缺少适配器时可自动安装 | ✅ |
-| OpenCode | `opencode` | `opencode acp` | 已安装支持 ACP 的 OpenCode | ✅ |
-| Codex | `codex-acp` / `codex` | 优先使用 `codex-acp` | 已安装 Codex；缺少适配器时可自动安装 | ✅ |
-| Hermes | `hermes` | `hermes acp` | 已安装 Hermes CLI | ✅ |
-| Kimi | `kimi` | `kimi acp` | 已安装 Kimi CLI | ✅ |
-| Gemini | `gemini` | `gemini --experimental-acp` | 已安装 Gemini CLI | ✅ |
-| GitHub Copilot | `copilot` | `copilot --acp` | 已安装 Copilot CLI | ✅ |
-| Pi | `pi-acp` | `pi-acp` | 已安装 Pi ACP 适配器 | ✅ |
-| Cursor | `agent` | `agent acp` | 已安装 Cursor Agent CLI | ✅ |
-| GLM | `glm-acp-agent` | `glm-acp-agent` | 已安装 GLM ACP 适配器 | ✅ |
-| OpenClaw | `openclaw` | `openclaw acp` | Gateway 正常运行且模型鉴权有效 | ✅ |
+> ✅ 表示 Agent-Bridge 已完成对应 Agent 的连接支持，不代表该 Agent 的账号、模型配置或网络一定可用。
 
-> ✅ 表示 Agent-Bridge 已实现发现、启动与 ACP 连接代码。`idle` 只表示 ACP 进程可用，不代表对应 Agent 的账号、模型 API Key 或网络一定可用。
-
-Claude Code 与 Codex 的 ACP 包装器只会在检测到原生 CLI、但未找到包装器时尝试自动安装。此过程要求本机已有 Node.js 与 npm。
+Claude Code 与 Codex 缺少连接适配器时可以自动安装；自动安装要求电脑上已有 Node.js 与 npm。具体检测命令和启动方式放在[开发者指南](#agent-适配器)。
 
 ---
 
-## 快速开始
+## 用户指南
 
-只在当前电脑使用 Agent 时，安装 **Agent-Bridge Local** 即可，不需要 Server。
+Agent-Bridge Local 是日常入口。只在当前电脑使用 Agent 时，不需要安装 Server；只有需要跨网络访问时，才需要连接一台已经部署好的 Agent-Bridge Server。
 
-### macOS / Linux
+### 安装并打开 Local
+
+| 系统 | 推荐方式 |
+| --- | --- |
+| Windows | 从 [GitHub Releases](https://github.com/Zleap-AI/Agent-Bridge/releases/latest) 下载对应版本并双击运行 |
+| macOS / Linux | 按[开发者指南中的一键安装方式](#安装-local)完成安装，安装成功后会自动打开 Local Console |
+
+普通用户不需要安装 Go，也不需要重新构建。Windows 首次运行会为当前用户注册后台自启动；macOS 和 Linux 的一键安装同样会注册当前用户的后台服务。
+
+Local Console 默认地址是 [http://localhost:9202](http://localhost:9202)，只供当前电脑访问，不要通过局域网或公网暴露。
+
+### 本地使用
+
+1. 打开 Local Console，左侧会列出当前电脑实际可用的 Agent。
+2. 选择一个 Agent，点击右上角的“新建 Session”。
+3. 在底部输入 Message 并发送，即可查看流式回答。
+4. 之后可以从顶部切换已有 Session，继续原来的对话。
+
+如果列表中没有某个 Agent，先确认它已经安装并能独立完成一次对话，然后重启 Agent-Bridge Local。
+
+### 远程连接
+
+如果还没有可用的 Server，请登录一台公网 Linux 服务器并运行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Zleap-AI/Agent-Bridge/main/scripts/install-server.sh | sudo bash
+```
+
+默认不需要输入公网 IP，脚本会自动识别并保存。安装完成后，终端会显示一次性的 Setup URL。用浏览器打开该地址，设置 Owner Password 后即可进入 Remote Console。如果页面打不开，请在云服务器安全组中放行 TCP 9201。只有自动识别失败且链接中出现 `SERVER_PUBLIC_IP` 时，才需要将它替换为服务器的公网 IP。域名、HTTPS 和反向代理配置参见[开发者指南](#部署-server)。
+
+1. 进入 Remote Console，在左侧底部打开“Pairing”。
+2. 生成一个 Pairing Code。Code 有效期为 10 分钟，只能使用一次；新 Code 会替换旧 Code。
+3. 回到用户电脑的 Local Console，打开“远程连接”。
+4. 输入 Server 地址和 Pairing Code，确认连接。
+5. Remote Console 出现这台 Device 后，即表示远程连接已经完成。
+
+Local 会主动连接 Server，因此用户电脑不需要公网 IP，也不需要开放本地端口。同一个 Local 一次只连接一个 Server，切换前会要求再次确认。
+
+在 Remote Console 删除 Device 会立即撤销它的远程连接权限，但不会删除电脑上的 Session 和 Message。
+
+### 远程调用
+
+1. 打开 Remote Console，选择一台在线 Device。
+2. 选择该 Device 上的 Agent。
+3. 创建或切换 Session，然后发送 Message。
+
+Device 离线时，页面会立即提示，不会把请求排队到设备重新上线后执行。公开网络建议使用 HTTPS/WSS；直接使用 IP 和 HTTP 时，Console 会持续显示未加密警告。
+
+### 常见问题
+
+| 现象 | 常见原因 | 处理方式 |
+| --- | --- | --- |
+| Local Console 没有 Agent | Agent 未安装，或后台服务没有找到它 | 确认 Agent 本身能正常运行，再重启 Local |
+| Agent 显示可用但发送失败 | Agent 尚未登录、模型配置无效或网络不可用 | 先直接使用 Agent 完成一次对话 |
+| Pairing Code 无效 | Code 已过期、已使用，或被新 Code 替换 | 在 Remote Console 重新生成 |
+| Device 显示离线 | Local 未运行、连接权限已撤销或网络不通 | 检查 Local 状态、Server 地址和网络 |
+| 能看到 Device 但无法调用 | Agent 不可用，或 Local 正在重新连接 | 查看 Device 上的 Agent 状态和两端日志 |
+| Server 页面打不开 | 服务未启动、端口未开放或反向代理配置错误 | 联系服务器管理员检查部署状态 |
+| 页面提示连接未加密 | 当前使用 HTTP/WS | 个人测试可以继续；公开网络应配置 HTTPS/WSS |
+
+---
+
+## 开发者指南
+
+以下内容面向部署者和集成开发者，集中说明命令行安装、Server 配置、Caller API、数据路径、源码构建和发布验证。
+
+### Agent 适配器
+
+| Agent | 检测的本地命令 | ACP 启动方式 |
+| --- | --- | --- |
+| Claude Code | `claude-agent-acp` | `claude-agent-acp` |
+| OpenCode | `opencode` | `opencode acp` |
+| Codex | `codex-acp` / `codex` | 优先使用 `codex-acp` |
+| Hermes | `hermes` | `hermes acp` |
+| Kimi | `kimi` | `kimi acp` |
+| Gemini | `gemini` | `gemini --experimental-acp` |
+| GitHub Copilot | `copilot` | `copilot --acp` |
+| Pi | `pi-acp` | `pi-acp` |
+| Cursor | `agent` | `agent acp` |
+| GLM | `glm-acp-agent` | `glm-acp-agent` |
+| OpenClaw | `openclaw` | `openclaw acp` |
+
+Agent 显示 `idle` 只表示 ACP 进程可用。账号登录、模型 API Key、插件和 Agent 自身网络仍由对应 Agent 管理。
+
+### 安装 Local
+
+#### macOS / Linux 一键安装
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Zleap-AI/Agent-Bridge/main/scripts/install-local.sh | bash
 ```
 
-脚本会下载匹配当前系统的最新稳定版二进制、校验 SHA-256、注册当前用户的后台服务、等待健康检查通过，再打开 [http://localhost:9202](http://localhost:9202)。重复运行同一命令即可升级；如果新版本启动失败，脚本会恢复原来的二进制和后台服务。
+脚本会下载匹配当前系统的最新稳定版二进制、校验 SHA-256、注册当前用户的后台服务、等待健康检查通过，再打开 Local Console。重复运行同一命令即可升级；如果新版本启动失败，脚本会恢复原来的二进制和后台服务。
 
-macOS 使用 `launchd`；Linux 快速安装目前要求系统使用 `systemd`。Linux 脚本会无交互尝试启用当前用户的 systemd linger，让 Local 在退出登录后继续运行；如果系统拒绝，安装仍会完成并打印警告，此时运行 `sudo loginctl enable-linger "$USER"`。容器、WSL 或非 `systemd` 发行版请改用下方的手动运行方式。
+macOS 使用 `launchd`。Linux 快速安装目前要求 `systemd`，并会尝试启用当前用户的 linger，让 Local 在退出登录后继续运行。如果系统拒绝，安装仍会完成并打印恢复命令。容器、WSL 或非 `systemd` 发行版请直接运行二进制。
 
-### Windows
+#### Windows
 
 1. 从 [GitHub Releases](https://github.com/Zleap-AI/Agent-Bridge/releases/latest) 下载 `agent-bridge_v0.4.0_windows_amd64.exe` 或 ARM64 版本。
 2. 将文件改名为 `agent-bridge.exe`，双击运行。
 3. 打开 [http://localhost:9202](http://localhost:9202)。
 
-首次运行会为当前用户注册后台自启动。运行日志按日期保存在 `%USERPROFILE%\.agent-bridge\logs\`，可以在 PowerShell 中持续查看当天日志：
+运行日志按日期保存在 `%USERPROFILE%\.agent-bridge\logs\`。可以在 PowerShell 中持续查看当天日志：
 
 ```powershell
 Get-Content "$env:USERPROFILE\.agent-bridge\logs\$(Get-Date -Format yyyy-MM-dd).log" -Wait
 ```
 
-### macOS / Linux 直接运行二进制
+#### 直接运行二进制
 
-不希望注册后台服务时，可以从 Release 直接下载原始二进制：
+不希望注册后台服务时，可以从 Release 下载原始二进制：
 
 ```bash
 chmod +x agent-bridge_v0.4.0_darwin_arm64
 ./agent-bridge_v0.4.0_darwin_arm64
 ```
 
-Windows 正常启动时会为当前用户注册后台自启动；需要撤销时使用下方的 `--uninstall`。
+### 部署 Server
 
-普通用户不需要安装 Go，也不需要重新构建。Local 启动后会：
+远程闭环只需要一台公网 Linux 服务器。Server 支持 Linux x86_64 / ARM64、systemd，以及 Ubuntu、Debian、CentOS、RHEL、Rocky Linux、AlmaLinux 和 Fedora。
 
-1. 扫描并启动可用 Agent。
-2. 在 `127.0.0.1:9202` 提供 Local Console。
-3. 恢复各 Agent 最近使用的 Session。
-4. 仅在完成 Pairing 后主动连接配置的 Server。
+#### 一键安装
 
-Local Console 只监听当前电脑，不应通过局域网或公网访问。
-
----
-
-## 远程连接
-
-远程闭环只需要一台公网 Linux 服务器。Agent-Bridge Server 支持 Linux x86_64 / ARM64、systemd，以及 Ubuntu、Debian、CentOS、RHEL、Rocky Linux、AlmaLinux 和 Fedora。
-
-### 1. 安装 Server
-
-将 `PUBLIC_IP` 替换为这台服务器的公网 IP 或域名，然后运行：
+默认安装不需要预先填写公网 IP：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Zleap-AI/Agent-Bridge/main/scripts/install-server.sh | sudo env AGENT_BRIDGE_PUBLIC_URL=http://PUBLIC_IP:9201 bash
+curl -fsSL https://raw.githubusercontent.com/Zleap-AI/Agent-Bridge/main/scripts/install-server.sh | sudo bash
 ```
 
-极简系统可能没有 `curl` 或 CA 证书。Ubuntu / Debian 先运行 `sudo apt-get update && sudo apt-get install -y ca-certificates curl`；RHEL / Rocky / AlmaLinux / Fedora 先运行 `sudo dnf install -y ca-certificates curl`。这是取得安装脚本本身所需的唯一前置工具，Server 运行时不需要 Go、Node.js 或 Docker。
+极简系统可能没有 `curl` 或 CA 证书。Ubuntu / Debian 先安装 `ca-certificates` 与 `curl`；RHEL 系发行版使用 `dnf` 安装同名软件包。Server 运行时不需要 Go、Node.js 或 Docker。
 
-安装脚本会：
+安装脚本会下载并校验二进制、创建独立系统用户和数据目录、注册 systemd 服务、等待健康检查通过，并输出一次性的 Setup URL。未配置公网地址时，脚本会先检查服务器网卡，再依次通过 AWS Check IP 与 ipify 查询出口公网 IPv4；只接受合法公网地址，并将结果保存到 Server 配置。默认监听 `0.0.0.0:9201`。
 
-- 下载并校验 Server 二进制。
-- 创建独立系统用户和 `/var/lib/agent-bridge` 数据目录。
-- 注册并启动 `agent-bridge-server.service`。
-- 默认监听 `0.0.0.0:9201`。
-- 输出一次性的 Setup URL 和常用诊断命令。
+脚本不会修改防火墙或云安全组。请自行允许 TCP `9201`，或通过反向代理提供 HTTPS/WSS。如果脚本无法确认公网地址，输出链接中的 `SERVER_PUBLIC_IP` 需要手动替换；也可以重新安装时通过 `AGENT_BRIDGE_PUBLIC_URL` 显式指定公网地址。
 
-脚本不会修改防火墙或云安全组。请自行允许 TCP `9201`，或通过反向代理提供 HTTPS/WSS。如果没有设置 `AGENT_BRIDGE_PUBLIC_URL` 且脚本无法确认公网地址，输出链接中的 `SERVER_PUBLIC_IP` 需要手动替换。
+#### 使用 Nginx 提供 HTTPS/WSS
 
-#### 可选：使用 Nginx 提供 HTTPS/WSS
-
-公开网络推荐只让 Nginx 访问本机 `9201`。先用下面命令重跑安装脚本，把 Server 改为仅监听回环地址；同时从云安全组和防火墙中移除公网 TCP `9201`，只保留 HTTPS 端口：
+公开网络推荐只让 Nginx 访问本机 `9201`。先重跑安装脚本，把 Server 改为仅监听回环地址；同时关闭公网 TCP `9201`，只保留 HTTPS 端口：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Zleap-AI/Agent-Bridge/main/scripts/install-server.sh | sudo env AGENT_BRIDGE_LISTEN_ADDR=127.0.0.1:9201 AGENT_BRIDGE_PUBLIC_URL=https://bridge.example.com bash
 ```
 
-下面配置同时支持 Remote Console、Device WebSocket 和 Caller API 的 SSE 流；`proxy_buffering off` 不能省略，否则部分代理会攒住 Agent 的流式输出。将域名和证书路径替换成自己的值：
+下面配置同时支持 Remote Console、Device WebSocket 和 Caller API 的 SSE 流。`proxy_buffering off` 不能省略，否则部分代理会缓存流式输出。
 
 ```nginx
 map $http_upgrade $connection_upgrade {
@@ -197,20 +260,13 @@ server {
 }
 ```
 
-配置后将安装参数和 Local Console 中的 Server 地址都改为 `https://bridge.example.com`。Nginx 会自动把 Device 的 HTTPS 地址升级为 WSS；无需另外开放 WebSocket 端口。
+配置后，将安装参数和 Local Console 中的 Server 地址都改为 `https://bridge.example.com`。Nginx 会把 Device 的 HTTPS 地址升级为 WSS，无需另外开放 WebSocket 端口。
 
-常用诊断命令：
+#### Owner Password 与诊断
 
-```bash
-sudo systemctl status agent-bridge-server
-sudo journalctl -u agent-bridge-server -f
-```
+打开安装脚本输出的 Setup URL，设置 Owner Password。第一版没有用户名或账号体系，之后直接使用该密码进入 Remote Console。
 
-### 2. 设置 Owner Password
-
-打开安装完成后输出的 Setup URL，设置一个 Owner Password。第一版没有用户名或账号体系，之后直接使用该密码进入 Remote Console。
-
-Setup URL 只在首次设置完成前有效。如果链接丢失，可以在服务器生成一个新链接；旧链接会立即失效：
+Setup URL 只在首次设置完成前有效。链接丢失时，可以在服务器生成一个新链接，旧链接会立即失效：
 
 ```bash
 sudo -u agent-bridge env AGENT_BRIDGE_PUBLIC_URL=http://PUBLIC_IP:9201 \
@@ -223,37 +279,18 @@ sudo -u agent-bridge env AGENT_BRIDGE_PUBLIC_URL=http://PUBLIC_IP:9201 \
 sudo -u agent-bridge agent-bridge-server reset-password
 ```
 
-Owner 登录状态最长保持 30 天；修改或重置密码会使已有登录状态全部失效。
+Owner 登录状态最长保持 30 天；修改或重置密码会使已有登录状态全部失效。常用诊断命令：
 
-### 3. Pairing Device
+```bash
+sudo systemctl status agent-bridge-server
+sudo journalctl -u agent-bridge-server -f
+```
 
-1. 在 Remote Console 左侧底部打开 **Pairing**，生成 Pairing Code。
-2. Pairing Code 有效期为 10 分钟，只能使用一次；生成新 Code 会使旧 Code 失效。
-3. 在用户电脑打开 [http://localhost:9202](http://localhost:9202)。
-4. 在 Local Console 打开 **远程连接**，只输入 Server 的 HTTP/HTTPS 地址和 Pairing Code。
-5. Pairing 成功后，Local 会保存凭证并主动建立 WS/WSS 长连接。
+### Caller API
 
-同一个 Local 一次只连接一个 Server。切换 Server 前，Local Console 会要求明确确认。Remote Console 删除 Device 后，该 Device 的连接凭证会立即失效，但不会删除电脑上的 Session 与 Message。
+开发者可以把 Device、Agent、Session 和 Message 能力接入自己的产品。先在 Remote Console 的“API Key”页面创建 Key；明文只显示一次，请立即妥善保存。
 
-### 4. 远程调用
-
-在 Remote Console 中选择在线 Device 和 Agent，创建或切换 Session，然后发送 Message。Device 离线时请求立即返回 `DEVICE_OFFLINE`，不会排队，也不会在恢复连接后自动执行。
-
-<p align="center">
-  <img src="docs/assets/readme/message-lifecycle.png" alt="Message 经过 Agent-Bridge 的调用流程" width="960" />
-</p>
-
-可以直接使用服务器 IP 和 HTTP，但登录密码、Pairing Code、API Key 与对话流量不会被 TLS 加密，两个 Console 都会持续显示安全警告。公开网络建议配置 HTTPS/WSS 反向代理。
-
-`v0.4.0` 暂未内置 Owner Password 登录防爆破或 Caller API 请求限流。个人自托管时请至少使用 HTTPS、限制管理入口来源；暴露给更多用户时，应在 Nginx、Caddy 或云防火墙上增加登录与 API 限流。
-
----
-
-## Caller API
-
-开发者可以把相同的 Device、Agent、Session 和 Message 能力接入自己的产品。先在 Remote Console 的 **API Key** 页面创建 Key；明文只显示一次，请立即妥善保存。
-
-### 最短调用流程
+#### 最短调用流程
 
 ```bash
 export AGENT_BRIDGE_SERVER="http://your-server:9201"
@@ -285,9 +322,9 @@ curl -N -X POST \
   -d '{"content":[{"type":"text","text":"解释当前目录的项目结构"}]}'
 ```
 
-`v0.4.0` 只接受 `text` 内容块，单次 Message 的文本总量最多为 128 KiB。`image` 等类型会明确返回 `UNSUPPORTED_CONTENT_TYPE`，超限文本返回 `PAYLOAD_TOO_LARGE`，不会被静默忽略。
+`v0.4.0` 只接受 `text` 内容块，单次 Message 文本总量最多为 128 KiB。`image` 等类型会返回 `UNSUPPORTED_CONTENT_TYPE`，超限文本返回 `PAYLOAD_TOO_LARGE`。
 
-### SSE 事件
+#### SSE 事件
 
 | 事件 | 说明 |
 | --- | --- |
@@ -299,9 +336,13 @@ curl -N -X POST \
 
 调用方断开 SSE 只会停止转发，不会终止本地 Agent。`v0.4.0` 暂不提供远程取消接口。
 
-单次调用的推理与回答文本合计最多为 2 MiB。超过上限时会发送 `PAYLOAD_TOO_LARGE` 错误，已经接收的部分仍保存在 Device；Agent 进程不会因此断开。
+单次调用的推理与回答文本合计最多为 2 MiB。超过上限时会发送 `PAYLOAD_TOO_LARGE`，已接收的部分仍保存在 Device，Agent 进程不会因此断开。
 
-### API 入口
+<p align="center">
+  <img src="docs/assets/readme/message-lifecycle.png" alt="Message 经过 Agent-Bridge 的调用流程" width="960" />
+</p>
+
+#### API 入口
 
 | 地址 | 用途 |
 | --- | --- |
@@ -314,11 +355,11 @@ curl -N -X POST \
 
 API Key 可以调用全部 Device，但不能访问 Pairing、API Key、Device 删除等管理接口。Key 不自动过期，可由 Owner 随时撤销。
 
----
+直接使用 IP 和 HTTP 时，Owner Password、Pairing Code、API Key 与对话流量不会被 TLS 加密。`v0.4.0` 也未内置登录防爆破或 Caller API 限流，公开部署应在反向代理或云防火墙中补充限制。
 
-## 使用与维护
+### 运行与数据
 
-### Local 数据
+#### Local 数据
 
 Local 默认将配置与运行数据保存在 `~/.agent-bridge/`：
 
@@ -331,11 +372,9 @@ Local 默认将配置与运行数据保存在 `~/.agent-bridge/`：
 └── logs/
 ```
 
-`tunnel/config.json` 保留兼容字段 `bridge_id`、`token` 和 `server_url`。Session 与 Message 始终在这台电脑上。
+`tunnel/config.json` 保留兼容字段 `bridge_id`、`token` 和 `server_url`。Session 与 Message 始终在 Device。macOS 与 Linux 会把目录限制为当前用户可访问，普通文件使用 `0600`，可执行文件使用 `0700`。
 
-### Server 数据
-
-Server 默认使用：
+#### Server 数据
 
 | 内容 | 路径 |
 | --- | --- |
@@ -344,9 +383,9 @@ Server 默认使用：
 | SQLite 与备份 | `/var/lib/agent-bridge/` |
 | systemd 服务 | `agent-bridge-server.service` |
 
-重复运行安装脚本会先备份 SQLite，再升级二进制并重启；启动失败时会尝试恢复上一版本。
+重复运行安装脚本会先备份 SQLite，再升级二进制并重启；启动失败时会恢复上一版本。
 
-### Local 启动参数
+#### Local 启动参数
 
 ```text
 agent-bridge [--listen 127.0.0.1] [--port 9202] [--debug] [--background] [--version]
@@ -360,9 +399,9 @@ agent-bridge [--listen 127.0.0.1] [--port 9202] [--debug] [--background] [--vers
 | `--background` | 后台服务模式，不自动打开浏览器 |
 | `--version` | 输出版本号后退出，不启动服务或注册自启动 |
 
-`--listen` 只用于明确了解网络边界的高级场景。Local Console 没有远程登录机制，不要将它监听到公网；远程调用应通过 Agent-Bridge Server 完成。
+Local Console 没有远程登录机制，不要将它监听到公网；远程调用应通过 Server 完成。
 
-### 卸载 Local
+#### 卸载 Local
 
 macOS / Linux：
 
@@ -370,35 +409,19 @@ macOS / Linux：
 curl -fsSL https://raw.githubusercontent.com/Zleap-AI/Agent-Bridge/main/scripts/install-local.sh | bash -s -- --uninstall
 ```
 
-追加 `--purge` 会同时删除 `~/.agent-bridge` 中的本地配置和历史：
+追加 `--purge` 会同时删除本地配置和历史：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Zleap-AI/Agent-Bridge/main/scripts/install-local.sh | bash -s -- --uninstall --purge
 ```
 
-Windows 先撤销当前用户的后台自启动，再删除下载的 `.exe`：
+Windows 先撤销当前用户的后台自启动，再删除下载的程序：
 
 ```powershell
 .\agent-bridge.exe --uninstall
 ```
 
 需要同时清除本地配置和历史时，再手动删除 `%USERPROFILE%\.agent-bridge`。
-
-### 常见问题
-
-| 现象 | 常见原因 | 处理方式 |
-| --- | --- | --- |
-| Local Console 没有 Agent | Agent 未安装，或命令不在后台服务的 `PATH` | 在终端运行对应命令，确认可执行后重启 Local |
-| Agent 显示 `idle` 但 Message 失败 | 模型登录、API Key 或 Agent 网络不可用 | 先直接运行 Agent CLI，确认能完成一次对话 |
-| Pairing Code 无效 | Code 已过期、已使用，或被新 Code 替换 | 在 Remote Console 重新生成 |
-| Device 显示离线 | Local 未运行、凭证已撤销，或无法访问 Server | 检查 Local 日志、Server 地址和网络出口 |
-| Remote Console 能看到 Device 但不能调用 | Agent 不可用，或 Local 正在重连 | 查看 Device 的 Agent 状态与两端日志 |
-| Server 页面打不开 | `9201` 未开放、服务未启动或反向代理配置错误 | 检查 systemd、云安全组和防火墙 |
-| 直接使用 IP 时出现安全警告 | 当前连接是未加密 HTTP/WS | 可继续个人测试；公开网络建议配置 HTTPS/WSS |
-
----
-
-## 开发者指南
 
 ### 目录结构
 
