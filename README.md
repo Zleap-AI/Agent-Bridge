@@ -12,8 +12,8 @@
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-16855b" /></a>
 </p>
 
-<p align="center"><strong>让本地 AI Agent 独立运行，也能通过自托管 Server 远程调用</strong></p>
-<p align="center">自动发现本机 Agent，统一管理 Session 与 Message；用户电脑无需公网 IP，也不需要开放本地端口。</p>
+<p align="center"><strong>把本地 AI Agent 变成可远程调用的标准能力</strong></p>
+<p align="center">自动发现并统一连接本机 Agent，通过自托管 Server 提供标准远程接口；用户电脑无需公网 IP，也无需开放本地端口。</p>
 
 <p align="center">
   <a href="#项目介绍">项目介绍</a> ·
