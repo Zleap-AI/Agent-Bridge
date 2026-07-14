@@ -46,7 +46,7 @@ Write-Host "[集合 1] Bridge Admin API" -ForegroundColor Yellow
 Test-Step "Health 检查" {
     $h = Invoke-RestMethod -Uri "$BRIDGE_ADMIN/health" -Method Get
     if ($h.status -ne "ok") { throw "status=$($h.status), 期望 ok" }
-    if ($h.version -ne "0.3.0") { throw "version=$($h.version), 期望 0.3.0" }
+    if ($h.version -ne "0.4.0") { throw "version=$($h.version), 期望 0.4.0" }
     $ids = $h.agents.PSObject.Properties.Name -join ', '
     Write-Host "    agents: $ids"
 }

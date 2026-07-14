@@ -92,6 +92,7 @@ func (sm *SessionManager) GetOrCreateSession(ctx context.Context, agentID string
 				"agent", agentID,
 				"session_id", sid,
 			)
+			sm.clearStoredSession(agentID)
 		}
 	}
 
@@ -255,4 +256,22 @@ func (sm *SessionManager) loadStoredSession(agentID string) string {
 	}
 
 	return latestSession
+}
+
+// clearStoredSession 清除 Agent 的磁盘会话记录（当会话无效时调用）
+// Lzm 2026-07-14
+func (sm *SessionManager) clearStoredSession(agentID string) {
+	dir := filepath.Join(sm.storeDir, agentID, "sessions")
+	if err := os.RemoveAll(dir); err != nil {
+		slog.Warn("清除无效会话目录失败",
+			"agent", agentID,
+			"path", dir,
+			"error", err,
+		)
+		return
+	}
+	slog.Debug("已清除无效会话",
+		"agent", agentID,
+		"path", dir,
+	)
 }

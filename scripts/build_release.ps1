@@ -8,7 +8,7 @@
 # Lzm 2026-07-14
 
 param(
-    [string]$version = "v0.3.0"
+    [string]$version = "v0.4.0"
 )
 
 $ErrorActionPreference = "Stop"

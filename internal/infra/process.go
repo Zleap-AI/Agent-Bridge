@@ -177,6 +177,14 @@ func (pm *ProcessManager) Wait() error {
 	return pm.waitErr
 }
 
+// ExitCode 返回进程退出码（进程尚未退出时返回 -1）
+func (pm *ProcessManager) ExitCode() int {
+	if pm.cmd == nil || pm.cmd.ProcessState == nil {
+		return -1
+	}
+	return pm.cmd.ProcessState.ExitCode()
+}
+
 // mapToEnvSlice 将 map[string]string 转为 []string（格式：KEY=VALUE）
 func mapToEnvSlice(env map[string]string) []string {
 	result := make([]string, 0, len(env))

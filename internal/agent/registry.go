@@ -132,10 +132,11 @@ func (r *AgentRegistry) Discover() error {
 		slog.Debug("添加 Codex 搜索路径", "path", codexDir)
 	}
 
-	// 3. 检查 OpenCode 配置目录（判断是否曾经安装过）
+	// 3. 检查 OpenCode 配置目录（判断是否曾经安装过，以及 ACP 支持）
 	opencodeConfig := filepath.Join(home, ".config", "opencode", "opencode.json")
-	if _, err := os.Stat(opencodeConfig); err == nil {
-		slog.Info("检测到 OpenCode 配置文件，但可执行文件未找到",
+	opencodeACPCmd := findExecutable("opencode", searchPaths)
+	if _, err := os.Stat(opencodeConfig); err == nil && opencodeACPCmd == "" {
+		slog.Info("检测到 OpenCode 配置目录，但可执行文件未在搜索路径中找到",
 			"path", opencodeConfig,
 		)
 		// 可尝试通过 npm/pip 自动安装

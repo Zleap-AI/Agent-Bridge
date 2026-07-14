@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"sync"
@@ -47,6 +48,11 @@ type baseAgent struct {
 
 	stderrBuf   bytes.Buffer // 子进程 stderr 环形缓冲区（用于故障诊断）
 	stderrBufMu sync.Mutex   // 保护 stderrBuf
+
+	stdoutBuf   bytes.Buffer // 子进程初始 stdout 内容（握手失败时用于诊断）
+	stdoutBufMu sync.Mutex   // 保护 stdoutBuf
+
+	wsAdapter *wsACPAdapter // 可选：WebSocket ACP 适配器（macOS opencode 用）
 }
 
 // newBaseAgent 创建 baseAgent 实例
@@ -97,6 +103,19 @@ func (a *baseAgent) nextID() string {
 // startProcess 启动 Agent 子进程
 // Lzm 2026-07-09
 func (a *baseAgent) startProcess(ctx context.Context) error {
+	// WebSocket 模式：使用 wsAdapter 代替 stdin/stdout 管道
+	if a.wsAdapter != nil {
+		a.pm = a.wsAdapter.cmd
+		a.writer = protocol.NewACPWriter(a.wsAdapter)
+		a.reader = protocol.NewACPReader(a.wsAdapter)
+		slog.Info("Agent 进程已启动（WebSocket 模式）",
+			"agent", a.meta.ID,
+			"pid", a.pm.PID(),
+		)
+		return nil
+	}
+
+	// 标准 stdin/stdout 管道模式
 	pm, err := infra.StartProcess(ctx, infra.StartProcessConfig{
 		Command: a.meta.Cmd,
 		Args:    a.meta.Args,
@@ -107,8 +126,13 @@ func (a *baseAgent) startProcess(ctx context.Context) error {
 		return &AgentStartError{AgentID: a.meta.ID, Err: err}
 	}
 	a.pm = pm
+	// 用 TeeReader 同时捕获原始 stdout 和 ACP 解析
+	a.stdoutBufMu.Lock()
+	a.stdoutBuf.Reset()
+	a.stdoutBufMu.Unlock()
+	teeStdout := io.TeeReader(pm.Stdout(), &a.stdoutBuf)
 	a.writer = protocol.NewACPWriter(pm.Stdin())
-	a.reader = protocol.NewACPReader(pm.Stdout())
+	a.reader = protocol.NewACPReader(teeStdout)
 
 	slog.Info("Agent 进程已启动",
 		"agent", a.meta.ID,
@@ -216,14 +240,26 @@ func (a *baseAgent) doHandshake(ctx context.Context) error {
 			a.stderrBufMu.Lock()
 			stderrOut := strings.TrimSpace(a.stderrBuf.String())
 			a.stderrBufMu.Unlock()
-			if stderrOut != "" {
-				// 截取最后 512 字节（通常是真正的原因）
-				if len(stderrOut) > 512 {
-					stderrOut = "..." + stderrOut[len(stderrOut)-512:]
-				}
-				return fmt.Errorf("ACP 进程过早退出（stderr: %s）", stderrOut)
+			a.stdoutBufMu.Lock()
+			stdoutOut := strings.TrimSpace(a.stdoutBuf.String())
+			a.stdoutBufMu.Unlock()
+			exitInfo := ""
+			if a.pm != nil {
+				exitCode := a.pm.ExitCode()
+				exitInfo = fmt.Sprintf(" exit=%d runtime=%v", exitCode, a.pm.Uptime().Round(time.Millisecond))
 			}
-			return fmt.Errorf("ACP 进程过早退出")
+			detail := stderrOut
+			if stdoutOut != "" {
+				detail = strings.TrimSpace(detail + " | stdout: " + stdoutOut)
+			}
+			if detail != "" {
+				// 截取最后 512 字节（通常是真正的原因）
+				if len(detail) > 512 {
+					detail = "..." + detail[len(detail)-512:]
+				}
+				return fmt.Errorf("ACP 进程过早退出（%s%s）", detail, exitInfo)
+			}
+			return fmt.Errorf("ACP 进程过早退出%s", exitInfo)
 		}
 		if msg.IsSuccess() {
 			var info struct {
