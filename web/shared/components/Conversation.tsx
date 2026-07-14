@@ -1,4 +1,4 @@
-import { Bot, ChevronDown, MessageSquare, Plus, RefreshCw, Send } from "lucide-react";
+import { Bot, ChevronDown, FolderOpen, MessageSquare, Plus, RefreshCw, Send } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { AgentInfo, MessageInfo, SessionInfo } from "../types";
 import { truncateMiddle } from "../format";
@@ -14,6 +14,7 @@ interface ConversationProps {
   onSelectSession: (id: string) => void;
   onCreateSession: () => Promise<void> | void;
   onRefreshSessions: () => Promise<void> | void;
+  onLoadSession?: () => void;
   sessionsLoading?: boolean;
   messages: MessageInfo[];
   messagesLoading?: boolean;
@@ -39,6 +40,7 @@ export function Conversation({
   onSelectSession,
   onCreateSession,
   onRefreshSessions,
+  onLoadSession,
   sessionsLoading,
   messages,
   messagesLoading,
@@ -131,6 +133,7 @@ export function Conversation({
             <ChevronDown size={15} aria-hidden="true" />
           </div>
           <IconButton icon={RefreshCw} label={t("common.refresh")} onClick={() => void onRefreshSessions()} disabled={!agent || !enabled || sessionsLoading || messagesLoading || sending} />
+          {onLoadSession ? <IconButton icon={FolderOpen} label={t("session.loadExisting")} onClick={onLoadSession} disabled={!agent || !enabled || sessionsLoading || messagesLoading || sending} /> : null}
           <Button
             variant="primary"
             icon={Plus}

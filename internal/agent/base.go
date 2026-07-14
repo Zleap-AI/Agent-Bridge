@@ -739,10 +739,9 @@ func (a *baseAgent) doNewSession(ctx context.Context) (string, error) {
 	return result.SessionID, nil
 }
 
-// doLoadSession 加载已有会话
-// 注意：必须传递 cwd 和 mcpServers 参数，部分 Agent（如 Kimi）校验参数完整性
-// Lzm 2026-07-10
-func (a *baseAgent) doLoadSession(ctx context.Context, sessionID string) error {
+// LoadSessionStream loads a Session and exposes the replay notifications.
+// cwd and mcpServers stay here because they are Agent protocol details.
+func (a *baseAgent) LoadSessionStream(ctx context.Context, sessionID string) (<-chan internal.StreamChunk, error) {
 	params, _ := json.Marshal(map[string]interface{}{
 		"sessionId":  sessionID,
 		"cwd":        a.meta.WorkDir,
@@ -763,8 +762,6 @@ func (a *baseAgent) doLoadSession(ctx context.Context, sessionID string) error {
 		"params", string(params),
 	)
 
-	// session/load 可能会先发流式通知再返回结果
-	// 使用流式读取处理
 	ch, err := a.doStream(ctx, req)
 	if err != nil {
 		slog.Warn("doLoadSession: doStream 失败",
@@ -772,7 +769,17 @@ func (a *baseAgent) doLoadSession(ctx context.Context, sessionID string) error {
 			"session_id", sessionID,
 			"error", err,
 		)
-		return &SessionError{SessionID: sessionID, Err: err}
+		return nil, &SessionError{SessionID: sessionID, Err: err}
+	}
+	return ch, nil
+}
+
+// doLoadSession loads a Session while discarding replay notifications. Callers
+// that need the native history use LoadSessionStream instead.
+func (a *baseAgent) doLoadSession(ctx context.Context, sessionID string) error {
+	ch, err := a.LoadSessionStream(ctx, sessionID)
+	if err != nil {
+		return err
 	}
 
 	for chunk := range ch {

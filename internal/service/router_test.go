@@ -10,6 +10,7 @@ import (
 	"time"
 
 	bridgeinternal "github.com/Zleap-AI/Agent-Bridge/internal"
+	"github.com/Zleap-AI/Agent-Bridge/internal/agent"
 	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
 )
 
@@ -100,6 +101,50 @@ func TestSessionsListDoesNotDuplicatePersistedActiveSession(t *testing.T) {
 	}
 	if len(sessions) != 1 || sessions[0].SessionID != "session-1" {
 		t.Fatalf("sessions/list = %+v, want one session-1", sessions)
+	}
+}
+
+type staticSessionScanner struct {
+	name     string
+	sessions []agent.SessionRef
+}
+
+func (s *staticSessionScanner) Name() string { return s.name }
+func (s *staticSessionScanner) DiscoverSessions() ([]agent.SessionRef, error) {
+	return s.sessions, nil
+}
+func (s *staticSessionScanner) ReadMessages(agent.SessionRef, int, int) ([]string, int, error) {
+	return nil, 0, nil
+}
+
+func TestSessionsListIncludesNativeAgentHistory(t *testing.T) {
+	const agentID = "native-history-test-agent"
+	agent.RegisterScanner(&staticSessionScanner{
+		name: agentID,
+		sessions: []agent.SessionRef{{
+			Harness:   agentID,
+			NativeID:  "native-session-1",
+			StartedAt: 1234,
+		}},
+	})
+
+	a := &sessionTestAgent{agentID: agentID}
+	reg := newSessionTestRegistry(a)
+	sm := newSessionManagerWithStoreDir(reg, t.TempDir())
+	params, _ := json.Marshal(map[string]string{"agent_id": agentID})
+	response := NewRequestRouter(reg).Route(context.Background(), &protocol.ANPMessage{
+		JSONRPC: "2.0", ID: "list-native-sessions", Method: "sessions/list", Params: params,
+	}, sm)
+	if response == nil || response.Error != nil {
+		t.Fatalf("sessions/list response = %+v", response)
+	}
+
+	var sessions []sessionListItem
+	if err := json.Unmarshal(response.Result, &sessions); err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].SessionID != "native-session-1" || sessions[0].UpdatedAt != 1234 {
+		t.Fatalf("sessions/list = %+v, want discovered native session", sessions)
 	}
 }
 
@@ -330,6 +375,51 @@ func TestSessionMessagesStartsDisconnectedAgentBeforeLoadingHistory(t *testing.T
 	a.mu.Unlock()
 	if startCalls != 1 || loadedSession != "remote-history" {
 		t.Fatalf("start calls = %d, loaded Session = %q", startCalls, loadedSession)
+	}
+}
+
+type replaySessionTestAgent struct {
+	*sessionTestAgent
+	history <-chan bridgeinternal.StreamChunk
+}
+
+func (a *replaySessionTestAgent) LoadSessionStream(_ context.Context, sessionID string) (<-chan bridgeinternal.StreamChunk, error) {
+	a.mu.Lock()
+	a.loadedSession = sessionID
+	a.mu.Unlock()
+	return a.history, nil
+}
+
+func TestSessionMessagesPersistsNativeHistoryReplayedByAgent(t *testing.T) {
+	history := make(chan bridgeinternal.StreamChunk, 3)
+	history <- bridgeinternal.StreamChunk{Type: bridgeinternal.StreamChunkResponse, RawUpdate: "user_message_chunk", Text: "Existing question"}
+	history <- bridgeinternal.StreamChunk{Type: bridgeinternal.StreamChunkResponse, RawUpdate: "agent_message_chunk", Text: "Existing answer"}
+	history <- bridgeinternal.StreamChunk{Type: bridgeinternal.StreamChunkFinal}
+	close(history)
+
+	a := &replaySessionTestAgent{sessionTestAgent: &sessionTestAgent{}, history: history}
+	reg := newSessionTestRegistry(a)
+	sm := newSessionManagerWithStoreDir(reg, t.TempDir())
+	params, _ := json.Marshal(map[string]interface{}{
+		"agent_id": a.ID(), "session_id": "native-history",
+	})
+
+	response := NewRequestRouter(reg).Route(context.Background(), &protocol.ANPMessage{
+		JSONRPC: "2.0", ID: "native-history", Method: "sessions/messages", Params: params,
+	}, sm)
+	if response == nil || response.Error != nil {
+		t.Fatalf("sessions/messages response = %+v", response)
+	}
+	var result sessionMessagesPage
+	if err := json.Unmarshal(response.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Messages) != 2 || result.Messages[0].Role != "user" || result.Messages[0].Text != "Existing question" || result.Messages[1].Text != "Existing answer" {
+		t.Fatalf("replayed history = %+v", result.Messages)
+	}
+	persisted := sm.LoadMessages(a.ID(), "native-history")
+	if !reflect.DeepEqual(persisted, result.Messages) {
+		t.Fatalf("persisted history = %+v, response = %+v", persisted, result.Messages)
 	}
 }
 

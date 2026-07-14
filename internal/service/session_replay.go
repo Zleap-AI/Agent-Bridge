@@ -14,7 +14,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -22,7 +21,6 @@ import (
 
 	"github.com/Zleap-AI/Agent-Bridge/internal"
 	"github.com/Zleap-AI/Agent-Bridge/internal/agent"
-	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
 )
 
 // SessionLoadReplayer 会话回放器
@@ -51,57 +49,44 @@ func (sr *SessionLoadReplayer) LoadAndSaveSession(ctx context.Context, agentID, 
 		return 0, fmt.Errorf("Agent 未注册: %s", agentID)
 	}
 
-	// 检查 Agent 是否在线
 	if a.Status() != agent.AgentIdle && a.Status() != agent.AgentBusy {
-		slog.Debug("Agent 不在线，跳过 ACP session/load",
-			"agent", agentID,
-			"status", a.Status().String(),
-		)
+		if count, _ := sr.tryLoadFromFile(agentID, sessionID); count > 0 {
+			return count, nil
+		}
+		return 0, fmt.Errorf("Agent %s 不在线，无法加载 Session", agentID)
+	}
+
+	loader, ok := a.(agent.SessionHistoryLoader)
+	if !ok {
+		if err := a.LoadSession(ctx, sessionID); err != nil {
+			return 0, err
+		}
 		return sr.tryLoadFromFile(agentID, sessionID)
 	}
 
-	// 构建 ACP session/load 请求
-	// 必须传递 cwd 和 mcpServers 参数，部分 Agent（如 Kimi）校验参数完整性
-	// Lzm 2026-07-10
-	acpReq := &protocol.ACPMessage{
-		JSONRPC: "2.0",
-		ID:      fmt.Sprintf("load_%s", truncateString(sessionID, 8)),
-		Method:  "session/load",
-		Params: func() json.RawMessage {
-			data, _ := json.Marshal(map[string]interface{}{
-				"sessionId":  sessionID,
-				"cwd":        "", // 调用方不持有 AgentMeta，传空串由 Agent 端处理
-				"mcpServers": []interface{}{},
-			})
-			return data
-		}(),
-	}
-
-	// 通过 Stream 获取回放消息
-	chunkCh, err := a.Stream(ctx, acpReq)
+	chunkCh, err := loader.LoadSessionStream(ctx, sessionID)
 	if err != nil {
-		slog.Warn("ACP session/load 失败，回退文件读取",
-			"agent", agentID,
-			"error", err,
-		)
-		return sr.tryLoadFromFile(agentID, sessionID)
+		return 0, err
 	}
 
-	// 收集回放的消息
 	var messages []StoredMessage
 	for chunk := range chunkCh {
+		if chunk.Type == internal.StreamChunkError {
+			if chunk.Error != nil {
+				return 0, chunk.Error
+			}
+			return 0, fmt.Errorf("Agent %s 加载 Session 失败", agentID)
+		}
 		if chunk.Type == internal.StreamChunkFinal {
-			continue // 跳过 final 响应
+			continue
 		}
 
-		// 使用简化规则：通过 RawUpdate 判断消息类型
 		msg := rawUpdateToStored(chunk.RawUpdate, chunk.Text)
 		if msg != nil {
-			messages = append(messages, *msg)
+			messages = appendReplayedMessage(messages, *msg)
 		}
 	}
 
-	// 持久化到 MessageStore
 	if len(messages) > 0 {
 		sr.msgStore.SaveReplayedMessages(agentID, sessionID, messages)
 		slog.Info("ACP session/load 完成",
@@ -111,6 +96,14 @@ func (sr *SessionLoadReplayer) LoadAndSaveSession(ctx context.Context, agentID, 
 	}
 
 	return len(messages), nil
+}
+
+func appendReplayedMessage(messages []StoredMessage, message StoredMessage) []StoredMessage {
+	if len(messages) > 0 && messages[len(messages)-1].Role == message.Role {
+		messages[len(messages)-1].Text += message.Text
+		return messages
+	}
+	return append(messages, message)
 }
 
 // tryLoadFromFile 尝试从文件加载（回退方案）

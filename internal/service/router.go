@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/Zleap-AI/Agent-Bridge/internal"
@@ -130,62 +131,91 @@ func (r *RequestRouter) handleSessionsList(msg *protocol.ANPMessage, sessionMgr 
 	}
 	json.Unmarshal(msg.Params, &filter)
 
-	var items []sessionListItem
-	seen := make(map[string]struct{})
-
 	if filter.AgentID != "" {
-		// 查询指定 Agent 的历史会话
-		sessions := sessionMgr.ListSessions(filter.AgentID, maxSessionsPerAgent)
-		for _, s := range sessions {
-			seen[s.SessionID] = struct{}{}
-			items = append(items, sessionListItem{
-				AgentID:      filter.AgentID,
-				SessionID:    s.SessionID,
-				MessageCount: s.MessageCount,
-				UpdatedAt:    s.UpdatedAt,
-			})
-		}
-		// 同时包含当前活跃会话
-		if sid := sessionMgr.GetSession(filter.AgentID); sid != "" {
-			if _, exists := seen[sid]; !exists {
-				items = append(items, sessionListItem{
-					AgentID:   filter.AgentID,
-					SessionID: sid,
-				})
-			}
-		}
-	} else {
-		// 查询所有 Agent 的会话
-		all := sessionMgr.ListAllSessions()
-		for agentID, sessions := range all {
-			for _, s := range sessions {
-				seen[agentID+"\x00"+s.SessionID] = struct{}{}
-				items = append(items, sessionListItem{
-					AgentID:      agentID,
-					SessionID:    s.SessionID,
-					MessageCount: s.MessageCount,
-					UpdatedAt:    s.UpdatedAt,
-				})
-			}
-		}
-		// 也包含活跃会话
-		for _, agentID := range r.registry.IDs() {
-			if sid := sessionMgr.GetSession(agentID); sid != "" {
-				if _, exists := seen[agentID+"\x00"+sid]; !exists {
-					items = append(items, sessionListItem{
-						AgentID:   agentID,
-						SessionID: sid,
-					})
-				}
-			}
-		}
+		return buildSessionListResponse(msg.ID, listAgentSessions(filter.AgentID, sessionMgr))
 	}
 
-	// 确保 nil → [] 避免 JSON 输出 null
-	if items == nil {
-		items = make([]sessionListItem, 0)
+	agentIDs := make(map[string]struct{})
+	for agentID := range sessionMgr.ListAllSessions() {
+		agentIDs[agentID] = struct{}{}
+	}
+	for _, agentID := range r.registry.IDs() {
+		agentIDs[agentID] = struct{}{}
+	}
+	orderedAgentIDs := make([]string, 0, len(agentIDs))
+	for agentID := range agentIDs {
+		orderedAgentIDs = append(orderedAgentIDs, agentID)
+	}
+	sort.Strings(orderedAgentIDs)
+
+	items := make([]sessionListItem, 0)
+	for _, agentID := range orderedAgentIDs {
+		items = append(items, listAgentSessions(agentID, sessionMgr)...)
 	}
 	return buildSessionListResponse(msg.ID, items)
+}
+
+func listAgentSessions(agentID string, sessionMgr *SessionManager) []sessionListItem {
+	byID := make(map[string]sessionListItem)
+	add := func(item sessionListItem) {
+		if item.SessionID == "" {
+			return
+		}
+		if current, exists := byID[item.SessionID]; exists {
+			if item.MessageCount > current.MessageCount {
+				current.MessageCount = item.MessageCount
+			}
+			if item.UpdatedAt > current.UpdatedAt {
+				current.UpdatedAt = item.UpdatedAt
+			}
+			byID[item.SessionID] = current
+			return
+		}
+		byID[item.SessionID] = item
+	}
+
+	for _, session := range sessionMgr.ListSessions(agentID, maxSessionsPerAgent) {
+		add(sessionListItem{
+			AgentID:      agentID,
+			SessionID:    session.SessionID,
+			MessageCount: session.MessageCount,
+			UpdatedAt:    session.UpdatedAt,
+		})
+	}
+	if nativeSessions, err := agent.DiscoverHistoricalSessions(agentID, maxSessionsPerAgent); err == nil {
+		for _, session := range nativeSessions {
+			add(sessionListItem{AgentID: agentID, SessionID: session.NativeID, UpdatedAt: session.StartedAt})
+		}
+	} else {
+		slog.Debug("未扫描到 Agent 原生 Session", "agent", agentID, "error", err)
+	}
+	activeSessionID := sessionMgr.GetSession(agentID)
+	add(sessionListItem{AgentID: agentID, SessionID: activeSessionID})
+
+	items := make([]sessionListItem, 0, len(byID))
+	for _, item := range byID {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].UpdatedAt == items[j].UpdatedAt {
+			return items[i].SessionID < items[j].SessionID
+		}
+		return items[i].UpdatedAt > items[j].UpdatedAt
+	})
+	if len(items) <= maxSessionsPerAgent {
+		return items
+	}
+	items = items[:maxSessionsPerAgent]
+	if activeSessionID == "" {
+		return items
+	}
+	for _, item := range items {
+		if item.SessionID == activeSessionID {
+			return items
+		}
+	}
+	items[len(items)-1] = byID[activeSessionID]
+	return items
 }
 
 // handleInvoke 处理 invoke 请求 — 将请求转发到指定 Agent
@@ -253,7 +283,7 @@ func (r *RequestRouter) handleInvokeSessionLoad(ctx context.Context, msg *protoc
 			fmt.Sprintf("解析 session/load 参数失败: %v", err))
 	}
 
-	if err := a.LoadSession(ctx, loadParams.SessionID); err != nil {
+	if _, err := NewSessionLoadReplayer(r.registry, sessionMgr.msgStore).LoadAndSaveSession(ctx, a.ID(), loadParams.SessionID); err != nil {
 		return protocol.NewErrorResponse(msg.ID, -31005,
 			fmt.Sprintf("加载会话 %s 失败: %v", loadParams.SessionID, err))
 	}
@@ -703,7 +733,7 @@ func (r *RequestRouter) handleSessionMessages(ctx context.Context, msg *protocol
 			return protocol.NewErrorResponse(msg.ID, -31002,
 				fmt.Sprintf("启动 Agent %s 失败: %v", params.AgentID, err))
 		}
-		if err := a.LoadSession(ctx, params.SessionID); err != nil {
+		if _, err := NewSessionLoadReplayer(r.registry, sessionMgr.msgStore).LoadAndSaveSession(ctx, params.AgentID, params.SessionID); err != nil {
 			return protocol.NewErrorResponse(msg.ID, -31005,
 				fmt.Sprintf("加载会话 %s 失败: %v", params.SessionID, err))
 		}

@@ -78,6 +78,13 @@ type Agent interface {
 	LoadSession(ctx context.Context, sessionID string) error
 }
 
+// SessionHistoryLoader is implemented by Agents that expose the ACP
+// session/load replay stream. This lets callers persist native history while
+// the Agent continues to own protocol details such as cwd and MCP parameters.
+type SessionHistoryLoader interface {
+	LoadSessionStream(ctx context.Context, sessionID string) (<-chan internal.StreamChunk, error)
+}
+
 // AgentMeta Agent 元数据（启动前静态配置）
 type AgentMeta struct {
 	// ID Agent 唯一标识

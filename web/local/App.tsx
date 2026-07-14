@@ -28,7 +28,7 @@ import { formatDate, truncateMiddle } from "../shared/format";
 import { useI18n } from "../shared/i18n";
 import type { AgentInfo, LocalLogEntry, LocalStatus, MessageInfo, SessionInfo, StreamEvent } from "../shared/types";
 
-type DrawerName = "remote" | "logs" | "settings" | null;
+type DrawerName = "remote" | "logs" | "settings" | "session" | null;
 
 const initialStatus: LocalStatus = {
   version: "0.4.0",
@@ -61,6 +61,9 @@ export function LocalApp() {
   const [messages, setMessages] = useState<MessageInfo[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [existingSessionId, setExistingSessionId] = useState("");
+  const [existingSessionLoading, setExistingSessionLoading] = useState(false);
+  const [existingSessionError, setExistingSessionError] = useState("");
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [drawer, setDrawer] = useState<DrawerName>(null);
@@ -212,6 +215,43 @@ export function LocalApp() {
       }
     } finally {
       if (generation === sessionLoadGeneration.current && selectedAgentIdRef.current === agentId) setSessionsLoading(false);
+    }
+  };
+
+  const loadExistingSession = async () => {
+    const nextSessionId = existingSessionId.trim();
+    if (!nextSessionId) {
+      setExistingSessionError(t("session.idRequired"));
+      return;
+    }
+    if (!selectedAgentId) return;
+
+    const agentId = selectedAgentId;
+    const generation = ++messageLoadGeneration.current;
+    setExistingSessionLoading(true);
+    setExistingSessionError("");
+    setWorkspaceError("");
+    try {
+      const nextMessages = await client.getMessages(agentId, nextSessionId);
+      if (generation !== messageLoadGeneration.current || selectedAgentIdRef.current !== agentId) return;
+      setSessions((current) => [
+        { id: nextSessionId, agentId, messageCount: nextMessages.length },
+        ...current.filter((session) => session.id !== nextSessionId),
+      ]);
+      if (sessionIdRef.current !== nextSessionId) {
+        skipMessageLoadForSession.current = nextSessionId;
+        sessionIdRef.current = nextSessionId;
+        setSessionId(nextSessionId);
+      }
+      setMessages(nextMessages);
+      setExistingSessionId("");
+      setDrawer(null);
+    } catch (error) {
+      if (generation === messageLoadGeneration.current && selectedAgentIdRef.current === agentId) {
+        setExistingSessionError(`${t("session.loadFailed")}: ${errorMessage(error)}`);
+      }
+    } finally {
+      if (generation === messageLoadGeneration.current && selectedAgentIdRef.current === agentId) setExistingSessionLoading(false);
     }
   };
 
@@ -396,6 +436,11 @@ export function LocalApp() {
           onSelectSession={setSessionId}
           onCreateSession={createSession}
           onRefreshSessions={() => loadSessions(selectedAgentId, sessionId)}
+          onLoadSession={() => {
+            setExistingSessionId("");
+            setExistingSessionError("");
+            setDrawer("session");
+          }}
           sessionsLoading={sessionsLoading}
           messages={messages}
           messagesLoading={messagesLoading}
@@ -408,6 +453,31 @@ export function LocalApp() {
           mobileMenuOpen={mobileMenu}
         />
       </div>
+
+      <Drawer
+        open={drawer === "session"}
+        title={t("session.loadExisting")}
+        description={selectedAgent?.displayName}
+        onClose={() => { if (!existingSessionLoading) setDrawer(null); }}
+      >
+        <div className="form-stack">
+          {existingSessionError ? <Notice tone="error">{existingSessionError}</Notice> : null}
+          <label className="field">
+            <span className="field__label">{t("session.id")}</span>
+            <input
+              className="mono"
+              value={existingSessionId}
+              onChange={(event) => setExistingSessionId(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter") void loadExistingSession(); }}
+              placeholder={t("session.idHint")}
+              autoComplete="off"
+              disabled={existingSessionLoading}
+            />
+            <span className="field__hint">{t("session.loadHint")}</span>
+          </label>
+          <Button variant="primary" onClick={() => void loadExistingSession()} loading={existingSessionLoading}>{t("session.load")}</Button>
+        </div>
+      </Drawer>
 
       <Drawer open={drawer === "remote"} title={t("local.remote")} description={status.remote.paired ? status.remote.serverUrl : t("local.unpairedBody")} onClose={() => setDrawer(null)}>
         <div className="form-stack">

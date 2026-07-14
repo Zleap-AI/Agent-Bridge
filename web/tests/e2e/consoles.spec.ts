@@ -11,23 +11,21 @@ async function useEnglish(page: Page) {
 }
 
 async function mockLocal(page: Page) {
+  const agents = [
+    { agent_id: "codex", display_name: "Codex CLI", status: "idle" },
+    { agent_id: "claude-code", display_name: "Claude Code", status: "disconnected" },
+  ];
   await page.route("**/api/v1/local/status", (route) => json(route, {
     version: "0.4.0",
     local: { status: "ok", address: "127.0.0.1:9202" },
     remote: { paired: false, connected: false, server_url: "" },
+    agents,
   }));
-  await page.route("**/agents", (route) => json(route, [
-    { agent_id: "codex", display_name: "Codex CLI", status: "idle" },
-    { agent_id: "claude-code", display_name: "Claude Code", status: "disconnected" },
-  ]));
+  await page.route("**/agents", (route) => json(route, agents));
   await page.route("**/api/v1/local/pairings", (route) => json(route, {
     remote: { paired: true, connected: false, state: "connecting", server_url: "http://203.0.113.8:9201", device_id: "device-1", device_name: "Studio Mac" },
   }));
   await page.routeWebSocket("**/ws/admin", (socket) => {
-    const agents = [
-      { agent_id: "codex", display_name: "Codex CLI", status: "idle" },
-      { agent_id: "claude-code", display_name: "Claude Code", status: "disconnected" },
-    ];
     socket.send(JSON.stringify({ method: "bridge/list", params: { bridges: [{ bridge_id: "local", connected: true, agents }] } }));
     socket.onMessage((raw) => {
       const message = JSON.parse(String(raw));
@@ -90,6 +88,22 @@ test("Local Console supports the core Agent and Message flow", async ({ page }) 
   await expect(page.getByText("Remote connection configured")).toBeVisible();
 });
 
+test("Local Console can load an existing native Session by ID", async ({ page }) => {
+  await useEnglish(page);
+  await mockLocal(page);
+  await page.goto("http://127.0.0.1:4202/");
+
+  await expect(page.getByText("Codex CLI").first()).toBeVisible();
+  await page.getByRole("button", { name: "Load existing Session" }).click();
+  const loader = page.getByRole("dialog", { name: "Load existing Session" });
+  await loader.getByLabel("Session ID").fill("native-session-1");
+  await loader.getByRole("button", { name: "Load Session" }).click();
+
+  await expect(page.getByRole("combobox", { name: "Session" })).toHaveValue("native-session-1");
+  await expect(page.getByText("Ready to help.")).toBeVisible();
+  await expect(loader).toHaveCount(0);
+});
+
 test("Remote Console renders a connected Device and streams a Message", async ({ page }) => {
   await useEnglish(page);
   await mockRemote(page);
@@ -136,6 +150,23 @@ test("Remote Console renders a connected Device and streams a Message", async ({
   await page.getByRole("button", { name: "Call history" }).click();
   await expect(page.getByText("Success")).toBeVisible();
   await expect(page.getByRole("dialog").getByText("Studio Mac")).toBeVisible();
+});
+
+test("Remote Console documents the complete Caller API flow", async ({ page }) => {
+  await useEnglish(page);
+  await mockRemote(page);
+  await page.goto("http://127.0.0.1:4201/");
+  await page.getByRole("button", { name: "API documentation" }).click();
+
+  const docs = page.getByRole("dialog", { name: "API documentation" });
+  await expect(docs).toHaveClass(/drawer--wide/);
+  await expect(docs.getByRole("heading", { name: "Quick start" })).toBeVisible();
+  await expect(docs.getByText("/api/v1/devices/{device_id}/agents/{agent_id}/sessions/{session_id}/messages", { exact: true })).toHaveCount(1);
+  await expect(docs.getByRole("heading", { name: "SSE events" })).toBeAttached();
+  await expect(docs.getByRole("heading", { name: "Error handling" })).toBeAttached();
+  await expect(docs.getByText("PAYLOAD_TOO_LARGE", { exact: true })).toHaveCount(1);
+  await expect(docs.getByRole("heading", { name: "Runtime rules and limits" })).toBeAttached();
+  await expect(docs.getByText("/openapi.json", { exact: true })).toBeAttached();
 });
 
 test("Remote Console discovers Agents registered after the Device appears", async ({ page }) => {

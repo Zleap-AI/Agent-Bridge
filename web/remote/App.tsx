@@ -6,7 +6,6 @@ import {
   ChevronDown,
   CircleAlert,
   Clock3,
-  ExternalLink,
   KeyRound,
   LogOut,
   Monitor,
@@ -31,7 +30,6 @@ import {
   EmptyState,
   IconButton,
   LanguageControl,
-  ListLink,
   Notice,
   Spinner,
   StatusDot,
@@ -50,6 +48,7 @@ import type {
   SessionInfo,
   StreamEvent,
 } from "../shared/types";
+import { ApiDocumentation } from "./ApiDocumentation";
 
 type Phase = "loading" | "setup" | "login" | "console" | "error";
 type DrawerName = "pairing" | "keys" | "calls" | "docs" | "settings" | null;
@@ -640,29 +639,8 @@ export function RemoteApp() {
         {callsError ? <Notice tone="error">{callsError}</Notice> : callsLoading ? <Spinner /> : calls.length ? <div className="table-wrap"><table className="data-table"><thead><tr><th>{t("remote.createdAt")}</th><th>Device</th><th>Agent</th><th>{t("common.status")}</th><th>{t("remote.duration")}</th></tr></thead><tbody>{calls.map((call, index) => <tr key={call.id || index}><td>{formatDate(call.createdAt, locale)}</td><td>{devices.find((device) => device.id === call.deviceId)?.name || call.deviceName || truncateMiddle(call.deviceId, 18)}</td><td>{call.agentId}</td><td><span className={`status-text status-text--${call.status}`}>{call.status === "success" ? <CheckCircle2 size={13} /> : call.status === "running" ? <Clock3 size={13} /> : <CircleAlert size={13} />}{t(`remote.${call.status === "error" ? "failed" : call.status}`)}</span></td><td>{formatDuration(call.durationMs)}</td></tr>)}</tbody></table></div> : <EmptyState compact icon={Activity} title={t("remote.calls")} body={t("remote.callsEmpty")} />}
       </Drawer>
 
-      <Drawer open={drawer === "docs"} title={t("remote.docs")} description={t("remote.docsBody")} onClose={() => setDrawer(null)}>
-        <div className="form-stack">
-          <Notice>{t("remote.apiAuth")}</Notice>
-          <div className="section-heading"><div><h3>{t("remote.resources")}</h3></div></div>
-          <div className="endpoint-list">
-            <div className="endpoint"><strong>GET</strong><code>/api/v1/devices</code></div>
-            <div className="endpoint"><strong>GET</strong><code>/api/v1/devices/:device/agents</code></div>
-            <div className="endpoint"><strong>POST</strong><code>/api/v1/devices/:device/agents/:agent/sessions</code></div>
-            <div className="endpoint"><strong>POST</strong><code>/api/v1/devices/:device/agents/:agent/sessions/:session/messages</code></div>
-          </div>
-          <div className="section-heading"><div><h3>{t("remote.messageFormat")}</h3></div></div>
-          <pre className="code-block">{`{
-  "content": [
-    {"type": "text", "text": "Hello"}
-  ]
-}`}</pre>
-          <div className="section-heading"><div><h3>{t("remote.streamEvents")}</h3></div></div>
-          <div className="event-tags"><span className="event-tag">message.delta</span><span className="event-tag">reasoning.delta</span><span className="event-tag">session.updated</span><span className="event-tag">done</span><span className="event-tag">error</span></div>
-          <div className="data-list">
-            <ListLink icon={BookOpen} title={t("remote.openDocs")} body="/docs" onClick={() => window.open("/docs", "_blank", "noopener")} />
-            <ListLink icon={ExternalLink} title={t("remote.downloadOpenApi")} body="/openapi.json" onClick={() => window.open("/openapi.json", "_blank", "noopener")} />
-          </div>
-        </div>
+      <Drawer open={drawer === "docs"} title={t("remote.docs")} description={t("remote.docsBody")} onClose={() => setDrawer(null)} wide>
+        <ApiDocumentation />
       </Drawer>
 
       <Drawer open={drawer === "settings"} title={t("remote.settings")} onClose={() => setDrawer(null)}>
