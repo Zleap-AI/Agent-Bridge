@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // process.go
 // Agent 子进程管理：启动、监控、终止
@@ -25,7 +25,7 @@ type ProcessManager struct {
 	stderr    io.ReadCloser
 	cancel    context.CancelFunc
 	done      chan struct{}
-	waitErr   error       // cmd.Wait 的返回结果
+	waitErr   error // cmd.Wait 的返回结果
 	mu        sync.Mutex
 	startedAt time.Time
 }

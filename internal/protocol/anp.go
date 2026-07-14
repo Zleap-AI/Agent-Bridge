@@ -1,9 +1,9 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // anp.go
 // ANP (Agent Network Protocol) 消息类型
-// SaaS 与 Bridge 之间通过 WebSocket 使用 ANP 协议通信
+// 远程服务与 Bridge 之间通过 WebSocket 使用 ANP 协议通信
 //
 // Lzm 2026-07-09
 
@@ -11,7 +11,7 @@ package protocol
 
 import "encoding/json"
 
-// ANPMessage SaaS ↔ Bridge 之间的 WebSocket 消息
+// ANPMessage 远程服务与 Bridge 之间的 WebSocket 消息
 type ANPMessage struct {
 	JSONRPC string          `json:"jsonrpc,omitempty"`
 	ID      string          `json:"id,omitempty"`
@@ -32,11 +32,12 @@ type ANPInvokeParams struct {
 	AgentID string          `json:"agent_id"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params"`
+	Stream  bool            `json:"stream,omitempty"`
 }
 
 // ANPBridgeRegister Bridge 注册消息参数
 type ANPBridgeRegister struct {
-	BridgeID string      `json:"bridge_id"`
+	BridgeID string     `json:"bridge_id"`
 	Agents   []ANPAgent `json:"agents"`
 }
 

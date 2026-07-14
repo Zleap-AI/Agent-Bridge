@@ -2,7 +2,7 @@
 # Python 3.12+
 #
 # test_all_agents.py
-# zleap-bridge Agent 全面测试 — 覆盖所有支持的 Agent
+# Agent-Bridge Agent 全面测试 — 覆盖所有支持的 Agent
 # 测试: session/new → sessions/list → session/prompt → sessions/messages → session/load → session/load(异常)
 # 安装辅助: 对未安装的 Agent 尝试自动安装或输出安装指引
 # 配置检测: 检查 Agent 状态，对未配置的提示用户
@@ -318,6 +318,7 @@ class BridgeClient:
             "params": {
                 "agent_id": agent_id,
                 "method": "session/prompt",
+                "stream": True,
                 "params": {
                     "sessionId": session_id,
                     "prompt": [{"type": "text", "text": text}],
@@ -713,7 +714,7 @@ async def main():
 
     print()
     print(c(f"  {'═' * 60}", "bold"))
-    print(c(f"  zleap-bridge Agent 全面测试", "bold"))
+    print(c(f"  Agent-Bridge Agent 全面测试", "bold"))
     print(c(f"  {'═' * 60}", "bold"))
     print(f"  桥接器: {uri}")
 
@@ -727,7 +728,7 @@ async def main():
         print(c(f"  ❌ 无法连接: {e}", "red"))
         print()
         print(f"  请确认 bridge 已启动:")
-        print(f"    1. 在终端中运行: {c('./bridge.exe --debug', 'cyan')}")
+        print(f"    1. 在终端中运行: {c('./agent-bridge.exe --debug', 'cyan')}")
         print(f"    2. 看到 'Admin HTTP 服务启动' 日志")
         print(f"    3. 重新运行本脚本")
         print()

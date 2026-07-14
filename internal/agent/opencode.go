@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // opencode.go
 // OpenCode Agent 实现
@@ -14,8 +14,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/zleap/bridge/internal"
-	"github.com/zleap/bridge/internal/protocol"
+	"github.com/Zleap-AI/Agent-Bridge/internal"
+	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
 )
 
 // OpenCodeAgent OpenCode Agent 实现

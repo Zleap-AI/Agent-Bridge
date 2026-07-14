@@ -24,8 +24,8 @@ async def main():
             return
 
         # 2. 流式 Prompt
-        req2 = {"jsonrpc": "2.0", "id": "cx2_stream", "method": "invoke",
-                "params": {"agent_id": "codex", "method": "session/prompt",
+        req2 = {"jsonrpc": "2.0", "id": "cx2", "method": "invoke",
+                "params": {"agent_id": "codex", "method": "session/prompt", "stream": True,
                            "params": {"sessionId": session_id,
                                       "prompt": [{"type": "text", "text": "Say 'hello' in one word."}]}}}
         await ws.send(json.dumps(req2))

@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // registry_platform_windows.go
 // Windows 平台特有的 Agent 搜索路径和环境配置

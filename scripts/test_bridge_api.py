@@ -2,7 +2,7 @@
 # Python 3.12+
 #
 # test_bridge_api.py
-# zleap-bridge WebSocket API 完整功能测试
+# Agent-Bridge WebSocket API 完整功能测试
 # 脚本统一管理在 scripts/ 目录下
 # 测试: health → agents → session/new → sessions/list → session/prompt
 #
@@ -21,7 +21,7 @@ except ImportError:
 
 
 class BridgeTester:
-    """zleap-bridge WebSocket API 测试器"""
+    """Agent-Bridge WebSocket API 测试器"""
 
     def __init__(self, uri="ws://localhost:9202/ws/admin"):
         self.uri = uri

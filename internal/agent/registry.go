@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // registry.go
 // Agent 注册表 — 检测系统 Agent、管理连接生命周期
@@ -54,14 +54,14 @@ func NewAgentRegistry(cfg AgentRegistryConfig) *AgentRegistry {
 	}
 }
 
-// AgentDescriptor Agent 注册描述信息（用于向 SaaS 注册）
+// AgentDescriptor Agent 注册描述信息（用于向远程服务注册）
 type AgentDescriptor struct {
 	AgentID     string `json:"agent_id"`
 	DisplayName string `json:"display_name,omitempty"`
 	Status      string `json:"status,omitempty"`
 }
 
-// ListDescriptors 返回所有 Agent 的描述列表（给 SaaS 注册用）
+// ListDescriptors 返回所有 Agent 的描述列表（给远程服务注册用）
 func (r *AgentRegistry) ListDescriptors() []AgentDescriptor {
 	var descriptors []AgentDescriptor
 	for _, a := range r.agents {

@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // interface.go
 // Agent 抽象接口定义，所有 Agent 类型差异由此接口封装
@@ -12,8 +12,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/zleap/bridge/internal"
-	"github.com/zleap/bridge/internal/protocol"
+	"github.com/Zleap-AI/Agent-Bridge/internal"
+	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
 )
 
 // AgentStatus 表示 Agent 进程的当前状态

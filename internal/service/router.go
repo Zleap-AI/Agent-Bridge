@@ -1,5 +1,5 @@
 // -*- coding: utf-8 -*-
-// Go 1.26+
+// Go 1.25+
 //
 // router.go
 // 消息路由器 — 将 ANP 消息路由到对应 Agent 并处理响应
@@ -16,9 +16,9 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/zleap/bridge/internal"
-	"github.com/zleap/bridge/internal/agent"
-	"github.com/zleap/bridge/internal/protocol"
+	"github.com/Zleap-AI/Agent-Bridge/internal"
+	"github.com/Zleap-AI/Agent-Bridge/internal/agent"
+	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
 )
 
 // RequestRouter ANP 消息路由器
@@ -145,7 +145,7 @@ func (r *RequestRouter) handleInvoke(ctx context.Context, msg *protocol.ANPMessa
 	// 解析 invoke 参数
 	var params protocol.ANPInvokeParams
 	if err := json.Unmarshal(msg.Params, &params); err != nil {
-		return protocol.NewErrorResponse(msg.ID, -32700,
+		return protocol.NewErrorResponse(msg.ID, -32602,
 			fmt.Sprintf("解析 invoke 参数失败: %v", err))
 	}
 
@@ -171,7 +171,7 @@ func (r *RequestRouter) handleInvoke(ctx context.Context, msg *protocol.ANPMessa
 	case "session/load":
 		return r.handleInvokeSessionLoad(ctx, msg, a, params.Params, sessionMgr)
 	case "session/prompt":
-		return r.handleInvokeSessionPrompt(ctx, msg, a, params.Params, sessionMgr)
+		return r.handleInvokeSessionPrompt(ctx, msg, a, params.Params, params.Stream, sessionMgr)
 	default:
 		return protocol.NewErrorResponse(msg.ID, -31003,
 			fmt.Sprintf("Agent %s 不支持方法: %s", params.AgentID, params.Method))
@@ -200,7 +200,7 @@ func (r *RequestRouter) handleInvokeSessionLoad(ctx context.Context, msg *protoc
 		SessionID string `json:"sessionId"`
 	}
 	if err := json.Unmarshal(params, &loadParams); err != nil {
-		return protocol.NewErrorResponse(msg.ID, -32700,
+		return protocol.NewErrorResponse(msg.ID, -32602,
 			fmt.Sprintf("解析 session/load 参数失败: %v", err))
 	}
 
@@ -227,10 +227,10 @@ func (r *RequestRouter) handleInvokeSessionLoad(ctx context.Context, msg *protoc
 }
 
 // handleInvokeSessionPrompt 处理 prompt 请求 — 最核心的交互
-// SaaS 发来 prompt，Bridge 转发到 Agent，流式回传结果
+// 远程服务发来 prompt，Bridge 转发到 Agent，流式回传结果
 // 支持：消息自动持久化、流式推送、EPERM/Session失效重试
 // Lzm 2026-07-10
-func (r *RequestRouter) handleInvokeSessionPrompt(ctx context.Context, msg *protocol.ANPMessage, a agent.Agent, params json.RawMessage, sessionMgr *SessionManager) *protocol.ANPMessage {
+func (r *RequestRouter) handleInvokeSessionPrompt(ctx context.Context, msg *protocol.ANPMessage, a agent.Agent, params json.RawMessage, stream bool, sessionMgr *SessionManager) *protocol.ANPMessage {
 	// 解析 prompt 参数
 	var promptParams struct {
 		SessionID string `json:"sessionId"`
@@ -240,7 +240,7 @@ func (r *RequestRouter) handleInvokeSessionPrompt(ctx context.Context, msg *prot
 		} `json:"prompt"`
 	}
 	if err := json.Unmarshal(params, &promptParams); err != nil {
-		return protocol.NewErrorResponse(msg.ID, -32700,
+		return protocol.NewErrorResponse(msg.ID, -32602,
 			fmt.Sprintf("解析 prompt 参数失败: %v", err))
 	}
 
@@ -264,8 +264,7 @@ func (r *RequestRouter) handleInvokeSessionPrompt(ctx context.Context, msg *prot
 		}
 	}
 
-	// 检查是否为流式请求
-	isStream := strings.Contains(msg.ID, "_stream") || strings.Contains(msg.ID, "_bridge")
+	isStream := wantsStreaming(stream, msg.ID)
 
 	if isStream {
 		return r.streamPrompt(ctx, msg, a, agentID, sessionID, userText, sessionMgr)
@@ -273,6 +272,14 @@ func (r *RequestRouter) handleInvokeSessionPrompt(ctx context.Context, msg *prot
 
 	// 非流式模式：等待完整响应（带重试）
 	return r.blockingPrompt(ctx, msg, a, agentID, sessionID, userText, sessionMgr)
+}
+
+func wantsStreaming(explicit bool, requestID string) bool {
+	if explicit {
+		return true
+	}
+	// 请求 ID 后缀只为旧客户端保留；新客户端应显式传 stream。
+	return strings.Contains(requestID, "_stream") || strings.Contains(requestID, "_bridge")
 }
 
 // streamPrompt 流式 prompt 处理 — 推送流式块 + 自动保存消息
@@ -393,7 +400,7 @@ func (r *RequestRouter) streamPrompt(ctx context.Context, msg *protocol.ANPMessa
 		// 流式完成后，自动保存消息
 		r.persistPromptMessages(sessionMgr, agentID, sessionID, userText, thoughtParts, responseParts)
 
-		// 发送 invoke 最终响应（告知 SaaS 调用完成）
+		// 发送 invoke 最终响应（告知远程服务调用完成）
 		if r.finalResponseCB != nil {
 			fullText := strings.Join(responseParts, "")
 			if fullText != "" {
@@ -520,12 +527,12 @@ func (r *RequestRouter) HandleSessionMessages(msg *protocol.ANPMessage, sessionM
 		Limit     int    `json:"limit"`
 	}
 	if err := json.Unmarshal(msg.Params, &params); err != nil {
-		return protocol.NewErrorResponse(msg.ID, -32700,
+		return protocol.NewErrorResponse(msg.ID, -32602,
 			fmt.Sprintf("解析参数失败: %v", err))
 	}
 
 	if params.AgentID == "" || params.SessionID == "" {
-		return protocol.NewErrorResponse(msg.ID, -32700, "缺少 agent_id 或 session_id")
+		return protocol.NewErrorResponse(msg.ID, -32602, "缺少 agent_id 或 session_id")
 	}
 
 	// 加载消息

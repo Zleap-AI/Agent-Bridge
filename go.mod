@@ -1,4 +1,4 @@
-module github.com/zleap/bridge
+module github.com/Zleap-AI/Agent-Bridge
 
 go 1.25.0
 
