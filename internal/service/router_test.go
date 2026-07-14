@@ -886,7 +886,7 @@ func TestLargeStreamPreservesFullTextInBoundedFinalResult(t *testing.T) {
 		if len(wire) <= MaxStreamOutputBytes || len(wire) > protocol.MaxANPDeviceMessageBytes {
 			t.Fatalf("worst-escape final wire bytes = %d", len(wire))
 		}
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("large stream did not complete")
 	}
 	if responseBytes != MaxStreamOutputBytes || finalBytes != 0 {

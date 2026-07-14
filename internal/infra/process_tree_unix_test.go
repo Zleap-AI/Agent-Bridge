@@ -6,6 +6,8 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -52,24 +54,19 @@ func TestWaitTerminatesDescendantsAfterParentExit(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			pidFile := filepath.Join(t.TempDir(), "child.pid")
 			pm, err := StartProcess(context.Background(), StartProcessConfig{
 				Command: "/bin/sh",
 				Args: []string{"-c",
-					`sleep 60 </dev/null >/dev/null 2>&1 & child=$!; echo "$child"; exit ` + test.exitCode},
+					`sleep 60 </dev/null >/dev/null 2>&1 & child=$!; printf '%s\n' "$child" > "$1"; exit ` + test.exitCode,
+					"process-tree-test", pidFile},
 			})
 			if err != nil {
 				t.Fatalf("StartProcess: %v", err)
 			}
 			t.Cleanup(func() { _ = pm.Stop() })
 
-			line, err := bufio.NewReader(pm.Stdout()).ReadString('\n')
-			if err != nil {
-				t.Fatalf("read child PID: %v", err)
-			}
-			childPID, err := strconv.Atoi(strings.TrimSpace(line))
-			if err != nil {
-				t.Fatalf("parse child PID %q: %v", line, err)
-			}
+			childPID := waitForPIDFile(t, pidFile)
 
 			waitErr := pm.Wait()
 			if (waitErr != nil) != test.wantError {
@@ -81,6 +78,29 @@ func TestWaitTerminatesDescendantsAfterParentExit(t *testing.T) {
 			}
 		})
 	}
+}
+
+func waitForPIDFile(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		contents, err := os.ReadFile(path)
+		if err == nil {
+			pidText := strings.TrimSpace(string(contents))
+			if pidText != "" {
+				pid, parseErr := strconv.Atoi(pidText)
+				if parseErr != nil {
+					t.Fatalf("parse child PID %q: %v", pidText, parseErr)
+				}
+				return pid
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read child PID file: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("child PID file %s was not written", path)
+	return 0
 }
 
 func waitForProcessExit(t *testing.T, pid int) {
