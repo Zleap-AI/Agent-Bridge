@@ -126,7 +126,15 @@ try {
     if ($LASTEXITCODE -ne 0) {
         Fail "Agent-Bridge Local --uninstall exited with $LASTEXITCODE"
     }
-    $remainingCommand = Get-ItemPropertyValue -Path $runKey -Name "Agent-Bridge" -ErrorAction SilentlyContinue
+    $remainingCommand = $null
+    $runKeyItem = Get-Item -LiteralPath $runKey -ErrorAction SilentlyContinue
+    if ($null -ne $runKeyItem -and $runKeyItem.GetValueNames() -contains "Agent-Bridge") {
+        $remainingCommand = $runKeyItem.GetValue(
+            "Agent-Bridge",
+            $null,
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+        )
+    }
     if ($null -ne $remainingCommand) {
         Fail "Agent-Bridge Local autostart entry still exists after --uninstall"
     }

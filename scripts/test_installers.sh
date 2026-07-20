@@ -271,8 +271,40 @@ EOF
 exit 0
 EOF
 
+  cat >"${mock_bin}/ufw" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >>"${MOCK_UFW_CALLS:?}"
+case "${1:-}" in
+  status)
+    if [[ "${MOCK_UFW_ACTIVE:-}" == "true" ]]; then
+      printf 'Status: active\n'
+    else
+      printf 'Status: inactive\n'
+    fi
+    ;;
+  allow) [[ "${MOCK_UFW_ALLOW_FAIL:-}" != "true" ]] ;;
+  *) exit 2 ;;
+esac
+EOF
+
+  cat >"${mock_bin}/firewall-cmd" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+printf '%s\n' "$*" >>"${MOCK_FIREWALLD_CALLS:?}"
+case "${1:-}" in
+  --state) [[ "${MOCK_FIREWALLD_ACTIVE:-}" == "true" ]] ;;
+  --permanent) [[ "${MOCK_FIREWALLD_CONFIGURE_FAIL:-}" != "true" ]] ;;
+  --reload) [[ "${MOCK_FIREWALLD_RELOAD_FAIL:-}" != "true" ]] ;;
+  *) exit 2 ;;
+esac
+EOF
+
   chmod 0755 "${mock_bin}/curl" "${mock_bin}/wget" "${mock_bin}/systemctl" \
-    "${mock_bin}/journalctl" "${mock_bin}/loginctl" "${mock_bin}/sleep"
+    "${mock_bin}/journalctl" "${mock_bin}/loginctl" "${mock_bin}/sleep" \
+    "${mock_bin}/ufw" "${mock_bin}/firewall-cmd"
 }
 
 write_release_fixtures() {
@@ -444,7 +476,7 @@ run_server_tests() {
   getent group agent-bridge >/dev/null 2>&1 || groupadd --system agent-bridge
 
   log "${TEST_IMAGE}: Server recovers from an existing group, then installs with private permissions and UMask"
-  env "${common[@]}" AGENT_BRIDGE_LISTEN_ADDR=127.0.0.1:19301 \
+  env "${common[@]}" MOCK_UFW_ACTIVE=true AGENT_BRIDGE_LISTEN_ADDR=127.0.0.1:19301 \
     AGENT_BRIDGE_VERSION=v0.4.0 bash "$installer"
   [[ "$(id -gn agent-bridge)" == "agent-bridge" ]] || fail 'Server user did not reuse the existing service group'
   assert_file_contains "$binary" 'VERSION=0.4.0' 'Server first install did not install requested version'
@@ -458,6 +490,9 @@ run_server_tests() {
   assert_mode 644 "$unit"
   [[ -f "${state}/active-agent-bridge-server" ]] || fail 'Server service is not active after first install'
   [[ -f "${state}/enabled-agent-bridge-server" ]] || fail 'Server service is not enabled after first install'
+  if grep -Fq 'allow 19301/tcp' "$MOCK_UFW_CALLS"; then
+    fail 'Server installer opened a firewall port for a loopback listener'
+  fi
 
   log "${TEST_IMAGE}: Server upgrade preserves existing custom listen address"
   env "${common[@]}" AGENT_BRIDGE_VERSION=v0.4.1 bash "$installer"
@@ -494,6 +529,23 @@ run_server_tests() {
   if grep -Eq 'checkip\.amazonaws\.com|api\.ipify\.org' "$MOCK_CURL_CALLS"; then
     fail 'Server queried public IP services despite an explicit public URL'
   fi
+
+  log "${TEST_IMAGE}: Server opens a public listener through active UFW"
+  : >"$MOCK_UFW_CALLS"
+  env "${common[@]}" MOCK_UFW_ACTIVE=true AGENT_BRIDGE_LISTEN_ADDR=0.0.0.0:19301 \
+    AGENT_BRIDGE_VERSION=v0.4.1 bash "$installer"
+  assert_file_contains "$MOCK_UFW_CALLS" 'allow 19301/tcp' \
+    'Server installer did not allow the public port through UFW'
+
+  log "${TEST_IMAGE}: Server opens a public listener through active firewalld"
+  : >"$MOCK_UFW_CALLS"
+  : >"$MOCK_FIREWALLD_CALLS"
+  env "${common[@]}" MOCK_FIREWALLD_ACTIVE=true AGENT_BRIDGE_LISTEN_ADDR=0.0.0.0:19301 \
+    AGENT_BRIDGE_VERSION=v0.4.1 bash "$installer"
+  assert_file_contains "$MOCK_FIREWALLD_CALLS" '--permanent --add-port=19301/tcp' \
+    'Server installer did not persist the public port through firewalld'
+  assert_file_contains "$MOCK_FIREWALLD_CALLS" '--reload' \
+    'Server installer did not reload firewalld'
 
   printf 'sqlite-before-failed-upgrade\n' >"$database"
   printf 'wal-before-failed-upgrade\n' >"${database}-wal"
@@ -607,6 +659,10 @@ run_inside_container() {
   export MOCK_RELEASE_DIR="$fixture_dir"
   export MOCK_CURL_CALLS="${root}/curl-calls.log"
   export MOCK_WGET_CALLS="${root}/wget-calls.log"
+  export MOCK_UFW_CALLS="${root}/ufw-calls.log"
+  export MOCK_FIREWALLD_CALLS="${root}/firewalld-calls.log"
+  : >"$MOCK_UFW_CALLS"
+  : >"$MOCK_FIREWALLD_CALLS"
 
   run_local_tests "$root"
   run_server_tests "$root"
