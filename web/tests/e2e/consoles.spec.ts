@@ -11,6 +11,7 @@ async function useEnglish(page: Page) {
 }
 
 async function mockLocal(page: Page) {
+  const loadedSessionIds: string[] = [];
   const agents = [
     { agent_id: "codex", display_name: "Codex CLI", status: "idle" },
     { agent_id: "claude-code", display_name: "Claude Code", status: "disconnected" },
@@ -31,7 +32,10 @@ async function mockLocal(page: Page) {
       const message = JSON.parse(String(raw));
       if (message.method === "admin/agents") socket.send(JSON.stringify({ id: message.id, result: agents }));
       if (message.method === "sessions/list") socket.send(JSON.stringify({ id: message.id, result: [{ agent_id: "codex", session_id: "session-one", message_count: 2 }] }));
-      if (message.method === "sessions/messages") socket.send(JSON.stringify({ id: message.id, result: { messages: [{ role: "user", text: "Hello" }, { role: "assistant", text: "Ready to help." }], total: 2 } }));
+      if (message.method === "sessions/messages") {
+        loadedSessionIds.push(String(message.params?.session_id || ""));
+        socket.send(JSON.stringify({ id: message.id, result: { messages: [{ role: "user", text: "Hello" }, { role: "assistant", text: "Ready to help." }], total: 2 } }));
+      }
       if (message.method === "invoke" && message.params?.method === "session/new") socket.send(JSON.stringify({ id: message.id, result: { sessionId: "session-new" } }));
       if (message.method === "invoke" && message.params?.method === "session/prompt") {
         socket.send(JSON.stringify({ method: "session/update", params: { request_id: message.id, type: "session_refreshed", content: { text: "session-refreshed" } } }));
@@ -40,6 +44,7 @@ async function mockLocal(page: Page) {
       }
     });
   });
+  return { loadedSessionIds };
 }
 
 async function mockRemote(page: Page) {
@@ -73,7 +78,7 @@ async function mockRemote(page: Page) {
 
 test("Local Console supports the core Agent and Message flow", async ({ page }) => {
   await useEnglish(page);
-  await mockLocal(page);
+  const localMock = await mockLocal(page);
   await page.goto("http://127.0.0.1:4202/");
   await expect(page.getByText("Codex CLI").first()).toBeVisible();
   await expect(page.getByText("Ready to help.")).toBeVisible();
@@ -81,6 +86,8 @@ test("Local Console supports the core Agent and Message flow", async ({ page }) 
   await page.getByRole("button", { name: "Send" }).click();
   await expect(page.getByText("Streamed answer")).toBeVisible();
   await expect(page.getByRole("combobox", { name: "Session" })).toHaveValue("session-refreshed");
+  await page.waitForTimeout(100);
+  expect(localMock.loadedSessionIds).not.toContain("session-refreshed");
   await page.getByRole("button", { name: "Remote connection" }).click();
   await page.getByLabel("Server address").fill("http://203.0.113.8:9201");
   await page.getByLabel("Pairing Code").fill("ABCD-1234");

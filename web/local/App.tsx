@@ -22,7 +22,7 @@ import {
   Unplug,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LocalAdminClient, localApi, type LocalSettings } from "../shared/api/local";
 import { Conversation } from "../shared/components/Conversation";
 import {
@@ -89,9 +89,13 @@ export function LocalApp() {
 
   const sessionsHook = useSessions(client, activeAgentId);
   const { sessions, sessionId, create: createSession, loadExisting: loadSession, loading: sessionsLoading } = sessionsHook;
+  const streamedSessionIdRef = useRef("");
 
   const messagesHook = useMessages(client, {
-    onSessionUpdate: (sid, aid) => sessionsHook.applyStreamUpdate(aid, sid),
+    onSessionUpdate: (sid, aid) => {
+      streamedSessionIdRef.current = sid;
+      sessionsHook.applyStreamUpdate(aid, sid);
+    },
   });
   const { messages, loading: messagesLoading, sending } = messagesHook;
 
@@ -162,10 +166,20 @@ export function LocalApp() {
     return () => window.clearInterval(id);
   }, [wsConnected]);
 
+  useEffect(() => {
+    if (wsConnected && activeAgentId) {
+      void sessionsHook.refresh(activeAgentId);
+    }
+  }, [wsConnected, activeAgentId, sessionsHook.refresh]);
+
   // ── 副作用：session 变化时加载消息 ────────────────────────────────────
 
   useEffect(() => {
     if (activeAgentId && sessionId) {
+      if (streamedSessionIdRef.current === sessionId) {
+        streamedSessionIdRef.current = "";
+        return;
+      }
       void messagesHook.load(activeAgentId, sessionId);
     }
   }, [activeAgentId, sessionId]);
