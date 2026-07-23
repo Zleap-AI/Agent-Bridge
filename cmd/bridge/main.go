@@ -17,7 +17,7 @@ import (
 	"github.com/Zleap-AI/Agent-Bridge/internal/service"
 )
 
-var version = "0.4.0"
+var version = "0.5.0"
 
 func main() {
 	debugFlag := flag.Bool("debug", false, "启用调试模式")

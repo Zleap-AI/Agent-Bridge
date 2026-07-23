@@ -142,7 +142,7 @@ export const remoteApi = {
     const raw = await requestJSON<RecordValue>(`${API}/status`);
     return {
       initialized: Boolean(raw.initialized ?? raw.setup_complete ?? !raw.setup_required),
-      version: String(raw.version || "0.4.0"),
+      version: String(raw.version || "0.5.0"),
       healthy: String(raw.status || "ok") === "ok" || Boolean(raw.healthy),
     };
   },

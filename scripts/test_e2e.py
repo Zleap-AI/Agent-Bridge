@@ -119,14 +119,14 @@ if __name__ == "__main__":
     def test_health():
         h = http_get(f"{BRIDGE_ADMIN}/health")
         assert h["status"] == "ok", f"status={h['status']}"
-        assert h["version"] == "0.4.0", f"version={h['version']}"
+        assert h["version"] == "0.5.0", f"version={h['version']}"
 
     def test_agents():
         agents = http_get(f"{BRIDGE_ADMIN}/agents") or []
         ids = [a.get("agent_id", "?") for a in agents]
         print(f"    检测到 {len(agents)} 个 Agent: {', '.join(ids)}")
 
-    test("Health 检查 (version=0.4.0)", test_health)
+    test("Health 检查 (version=0.5.0)", test_health)
     test("Agent 列表", test_agents)
 
     # === 测试集 2: Admin WebSocket 链路 ===

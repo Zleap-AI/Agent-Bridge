@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-version="${1:-v0.4.0}"
+version="${1:-v0.5.0}"
 binary_version="${version#v}"
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dist_dir="${root_dir}/dist"
@@ -57,8 +57,9 @@ for target in "${server_targets[@]}"; do
 done
 
 install -m 0755 "${root_dir}/scripts/install-local.sh" "${dist_dir}/install-local.sh"
+install -m 0644 "${root_dir}/scripts/install-local.ps1" "${dist_dir}/install-local.ps1"
 install -m 0755 "${root_dir}/scripts/install-server.sh" "${dist_dir}/install-server.sh"
-artifacts+=("install-local.sh" "install-server.sh")
+artifacts+=("install-local.sh" "install-local.ps1" "install-server.sh")
 
 if command -v sha256sum >/dev/null 2>&1; then
   (cd "${dist_dir}" && sha256sum "${artifacts[@]}" > SHA256SUMS)

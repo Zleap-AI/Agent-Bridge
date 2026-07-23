@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -138,7 +137,6 @@ func (r *RequestRouter) handleSessionExec(ctx context.Context, msg *protocol.ANP
 		"command", truncateString(execParams.Command, 200),
 	)
 
-	// 执行命令（使用 PowerShell）
 	timeout := execParams.Timeout
 	if timeout <= 0 {
 		timeout = 30
@@ -146,7 +144,7 @@ func (r *RequestRouter) handleSessionExec(ctx context.Context, msg *protocol.ANP
 	execCtx, execCancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer execCancel()
 
-	cmd := exec.CommandContext(execCtx, "powershell", "-Command", execParams.Command)
+	cmd := shellCommandContext(execCtx, execParams.Command)
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
 

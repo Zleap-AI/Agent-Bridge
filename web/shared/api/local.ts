@@ -34,7 +34,7 @@ export function normalizeLocalStatus(raw: RecordValue): LocalStatus {
   const local = (raw.local || {}) as RecordValue;
   const remote = (raw.remote || {}) as RecordValue;
   return {
-    version: String(raw.version || "0.4.0"),
+    version: String(raw.version || "0.5.0"),
     localAddress: String(local.address || raw.listen_address || "127.0.0.1:9202"),
     healthy: String(local.status || raw.status || "ok") === "ok",
     agents: normalizeStatusAgents(raw),

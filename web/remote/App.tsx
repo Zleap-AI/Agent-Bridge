@@ -754,7 +754,7 @@ export function RemoteApp() {
           {deviceSettingsError ? <Notice tone="error">{deviceSettingsError}</Notice> : null}
           <LanguageControl />
           <div className="settings-list data-list">
-            <div className="data-row"><div className="data-row__copy"><strong>{t("common.version")}</strong><span>{server?.version || "0.4.0"}</span></div></div>
+            <div className="data-row"><div className="data-row__copy"><strong>{t("common.version")}</strong><span>{server?.version || "0.5.0"}</span></div></div>
             {selectedDevice ? <><div className="section-heading"><div><h3>Device</h3><p className="mono">{truncateMiddle(selectedDevice.id, 36)}</p></div></div><label className="field"><span className="field__label">{t("common.name")}</span><input value={deviceName} onChange={(event) => setDeviceName(event.target.value)} /><span className="field__hint">{t("remote.deviceNameLimit")}</span></label><Button variant="secondary" icon={Pencil} loading={savingDevice} disabled={!deviceName.trim() || deviceName.trim() === selectedDevice.name} onClick={() => void saveDeviceName()}>{t("common.save")}</Button><Button variant="ghost" icon={Trash2} onClick={() => setConfirmDeleteDevice(true)}>{t("remote.deleteDevice")}</Button></> : null}
           </div>
           <Button variant="secondary" icon={LogOut} onClick={() => void logout()}>{t("common.logout")}</Button>

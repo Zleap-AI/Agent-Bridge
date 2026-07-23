@@ -131,6 +131,16 @@ export function useSessions(client: LocalAdminClient, agentId?: string | null) {
     setSessionId(id);
   }, []);
 
+  const applyStreamUpdate = useCallback((id: string, nextSessionId: string) => {
+    if (!nextSessionId || agentIdRef.current !== id) return;
+    sessionLoadGeneration.current += 1;
+    setSessions((current) => [
+      { id: nextSessionId, agentId: id },
+      ...current.filter((session) => session.id !== nextSessionId),
+    ]);
+    setSessionId(nextSessionId);
+  }, []);
+
   /**
    * 加载已有会话（按会话 ID 插入列表并选中）
    *
@@ -174,6 +184,7 @@ export function useSessions(client: LocalAdminClient, agentId?: string | null) {
     refresh,
     create,
     select,
+    applyStreamUpdate,
     loadExisting,
     setSessionId,
   };

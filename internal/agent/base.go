@@ -64,19 +64,18 @@ type baseAgent struct {
 	stopped atomic.Bool
 	// restartCount 连续重启次数，用于退避延迟计算。
 	restartCount atomic.Int32
-	// lastPrepare 保存最近一次 start() 的 prepare 函数，供重连时复用。
-	lastPrepare func() error
 }
 // agentRuntime owns every resource belonging to one child-process generation.
 // Keeping these values together prevents a late goroutine from a dead process
 // from closing or mutating the pipes of a newly restarted process.
 type agentRuntime struct {
-	pm     *infra.ProcessManager
-	writer *protocol.ACPWriter
-	reader *protocol.ACPReader
-	readCh chan *protocol.ACPMessage
-	cancel context.CancelFunc
-	done   <-chan struct{}
+	pm      *infra.ProcessManager
+	writer  *protocol.ACPWriter
+	reader  *protocol.ACPReader
+	readCh  chan *protocol.ACPMessage
+	cancel  context.CancelFunc
+	done    <-chan struct{}
+	prepare func() error
 
 	readWG    sync.WaitGroup
 	readDone  chan struct{}
@@ -161,7 +160,7 @@ func (a *baseAgent) nextID() string {
 
 // start 启动一个 Agent 子进程并完成握手。整个启动过程受同一把生命周期
 // 锁保护；并发 Start 会复用已经成功启动的进程，而不会再创建一个副本。
-// start 同时保存 prepare 供 watchRuntime 自动重连时复用。
+// 每一代 runtime 保存自己的 prepare，供 watchRuntime 自动重连时复用。
 // Lzm 2026-07-22
 func (a *baseAgent) start(ctx context.Context, prepare func() error) error {
 	a.lifecycleMu.Lock()
@@ -169,7 +168,6 @@ func (a *baseAgent) start(ctx context.Context, prepare func() error) error {
 
 	// 新启动尝试重置自动重连状态（允许 watchRuntime 在退出后重启）
 	a.stopped.Store(false)
-	a.lastPrepare = prepare
 
 	if err := ctx.Err(); err != nil {
 		return &AgentStartError{AgentID: a.meta.ID, Err: err}
@@ -203,6 +201,7 @@ func (a *baseAgent) start(ctx context.Context, prepare func() error) error {
 			readCh:   make(chan *protocol.ACPMessage, 100),
 			cancel:   processCancel,
 			done:     processCtx.Done(),
+			prepare:  prepare,
 			readDone: make(chan struct{}),
 		}
 		a.setRuntime(run)
@@ -214,14 +213,14 @@ func (a *baseAgent) start(ctx context.Context, prepare func() error) error {
 		// 标准 stdin/stdout 管道模式
 		// Codex 在 Windows Job Object 包装下无法正常初始化（PATH 别名创建失败），
 		// 因此对其禁用进程树管理。
-		useTree := !(a.meta.ID == "codex" && runtime.GOOS == "windows")
+		disableProcessTree := a.meta.ID == "codex" && runtime.GOOS == "windows"
 		pm, err := infra.StartProcess(processCtx, infra.StartProcessConfig{
-			Command:        a.meta.Cmd,
-			Args:           a.meta.Args,
-			WorkDir:        a.meta.WorkDir,
-			Env:            a.meta.Env,
-			PathDirs:       a.meta.PathDirs,
-			UseProcessTree: useTree,
+			Command:            a.meta.Cmd,
+			Args:               a.meta.Args,
+			WorkDir:            a.meta.WorkDir,
+			Env:                a.meta.Env,
+			PathDirs:           a.meta.PathDirs,
+			DisableProcessTree: disableProcessTree,
 		})
 		if err != nil {
 			processCancel()
@@ -235,6 +234,7 @@ func (a *baseAgent) start(ctx context.Context, prepare func() error) error {
 			readCh:   make(chan *protocol.ACPMessage, 100),
 			cancel:   processCancel,
 			done:     processCtx.Done(),
+			prepare:  prepare,
 			readDone: make(chan struct{}),
 		}
 		a.setRuntime(run)
@@ -395,7 +395,7 @@ func (a *baseAgent) watchRuntime(run *agentRuntime) {
 		return
 	}
 
-	if err := a.start(context.Background(), a.lastPrepare); err != nil {
+	if err := a.start(context.Background(), run.prepare); err != nil {
 		slog.Warn("Agent 自动重连失败",
 			"agent", a.meta.ID,
 			"error", err,

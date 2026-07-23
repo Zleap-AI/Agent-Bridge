@@ -51,12 +51,10 @@ type StartProcessConfig struct {
 	Env      map[string]string // 额外环境变量
 	PathDirs []string          // 在父进程 PATH 之外补充的可执行文件目录
 
-	// UseProcessTree 是否启用进程树管理（Windows Job Object）
-	// 部分 Agent（如 Codex）在 Job Object 包装下无法正常初始化，
-	// 此时应设置为 false 使用普通进程启动。
-	// Windows 默认 true；非 Windows 平台忽略此选项。
-	// Lzm 2026-07-22
-	UseProcessTree bool
+	// DisableProcessTree disables descendant cleanup for processes that cannot
+	// run inside the platform process boundary, such as Codex on Windows.
+	// Process-tree management is enabled by default.
+	DisableProcessTree bool
 }
 
 // StartProcess 启动一个新子进程
@@ -65,11 +63,7 @@ func StartProcess(ctx context.Context, cfg StartProcessConfig) (*ProcessManager,
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd := CommandContext(ctx, cfg.Command, cfg.Args...)
-	// 默认启用进程树管理（Windows 上创建 Job Object）
-	useTree := true
-	if !cfg.UseProcessTree {
-		useTree = false
-	}
+	useTree := !cfg.DisableProcessTree
 	var tree processTree
 	if useTree {
 		var err error

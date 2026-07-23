@@ -54,7 +54,7 @@ import { PermissionDialog } from "./components/PermissionDialog";
 /* ─── 常量 ─────────────────────────────────────────────────── */
 
 const initialStatus: LocalStatus = {
-  version: "0.4.0",
+  version: "0.5.0",
   localAddress: "127.0.0.1:9202",
   healthy: false,
   agents: [],
@@ -91,7 +91,7 @@ export function LocalApp() {
   const { sessions, sessionId, create: createSession, loadExisting: loadSession, loading: sessionsLoading } = sessionsHook;
 
   const messagesHook = useMessages(client, {
-    onSessionUpdate: (sid, aid) => { void sessionsHook.refresh(aid); },
+    onSessionUpdate: (sid, aid) => sessionsHook.applyStreamUpdate(aid, sid),
   });
   const { messages, loading: messagesLoading, sending } = messagesHook;
 

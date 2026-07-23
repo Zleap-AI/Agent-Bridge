@@ -20,7 +20,7 @@
 #   .\scripts\install-local.ps1 -Uninstall -Purge
 #
 # 环境变量:
-#   AGENT_BRIDGE_VERSION    指定版本号（默认 latest，如 v0.4.0）
+#   AGENT_BRIDGE_VERSION    指定版本号（默认 latest，如 v0.5.0）
 #   AGENT_BRIDGE_LOCAL_URL  自定义 Local Console 地址（默认 http://localhost:9202）
 #
 # Lzm 2026-07-23
@@ -174,8 +174,8 @@ $expectedVersion = $resolvedVersion.TrimStart('v')
 
 # 构建下载 URL
 # Release 产物命名规则见 build_release.ps1:
-#   zleap-bridge-go_v{version}_windows_{arch}.exe
-$assetName = "zleap-bridge-go_${resolvedVersion}_windows_${arch}.exe"
+#   agent-bridge_v{version}_windows_{arch}.exe
+$assetName = "agent-bridge_${resolvedVersion}_windows_${arch}.exe"
 $baseUrl = "https://github.com/${repo}/releases/download/${resolvedVersion}"
 $downloadUrl = "${baseUrl}/${assetName}"
 $checksumUrl = "${baseUrl}/SHA256SUMS"

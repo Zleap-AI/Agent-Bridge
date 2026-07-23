@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Zleap-AI/Agent-Bridge/releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-v0.4.0-18181b" /></a>
+  <a href="https://github.com/Zleap-AI/Agent-Bridge/releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-v0.5.0-18181b" /></a>
   <img alt="Go" src="https://img.shields.io/badge/Go-1.25%2B-00ADD8" />
   <img alt="Protocol" src="https://img.shields.io/badge/ACP-v1%20%7C%20JSON--RPC%202.0-2563eb" />
   <img alt="Platforms" src="https://img.shields.io/badge/Local-macOS%20%7C%20Windows%20%7C%20Linux-18181b" />
@@ -202,7 +202,7 @@ macOS uses `launchd`. The Linux quick installer currently requires `systemd` and
 
 #### Windows
 
-1. Download `agent-bridge_v0.4.0_windows_amd64.exe`, or the ARM64 build, from [GitHub Releases](https://github.com/Zleap-AI/Agent-Bridge/releases/latest).
+1. Download `agent-bridge_v0.5.0_windows_amd64.exe`, or the ARM64 build, from [GitHub Releases](https://github.com/Zleap-AI/Agent-Bridge/releases/latest).
 2. Rename it to `agent-bridge.exe` and double-click it.
 3. Open [http://localhost:9202](http://localhost:9202).
 
@@ -217,8 +217,8 @@ Get-Content "$env:USERPROFILE\.agent-bridge\logs\$(Get-Date -Format yyyy-MM-dd).
 To avoid registering a background service, download a raw binary from the Release:
 
 ```bash
-chmod +x agent-bridge_v0.4.0_darwin_arm64
-./agent-bridge_v0.4.0_darwin_arm64
+chmod +x agent-bridge_v0.5.0_darwin_arm64
+./agent-bridge_v0.5.0_darwin_arm64
 ```
 
 ### Deploy Server
@@ -340,7 +340,7 @@ curl -N -X POST \
   -d '{"content":[{"type":"text","text":"Explain the project structure in the current directory"}]}'
 ```
 
-`v0.4.0` accepts only `text` content blocks, with a maximum combined Message size of 128 KiB. Types such as `image` return `UNSUPPORTED_CONTENT_TYPE`; oversized text returns `PAYLOAD_TOO_LARGE`.
+`v0.5.0` accepts only `text` content blocks, with a maximum combined Message size of 128 KiB. Types such as `image` return `UNSUPPORTED_CONTENT_TYPE`; oversized text returns `PAYLOAD_TOO_LARGE`.
 
 #### SSE Events
 
@@ -352,7 +352,7 @@ curl -N -X POST \
 | `done` | The Message completed normally |
 | `error` | A structured error code and readable message |
 
-Disconnecting the caller from SSE stops forwarding only; it does not terminate the local Agent. `v0.4.0` does not yet provide a remote cancellation endpoint.
+Disconnecting the caller from SSE stops forwarding only; it does not terminate the local Agent. `v0.5.0` does not yet provide a remote cancellation endpoint.
 
 Reasoning and answer text for one invocation are limited to 2 MiB in total. When that limit is exceeded, the stream sends `PAYLOAD_TOO_LARGE`. Content already received remains on the Device and the Agent process stays connected.
 
@@ -373,7 +373,7 @@ Reasoning and answer text for one invocation are limited to 2 MiB in total. When
 
 An API Key can invoke every Device, but cannot use administrative endpoints for Pairing, API Keys, or Device deletion. Keys do not expire automatically and may be revoked by the Owner at any time.
 
-When using an IP address over HTTP, the Owner Password, Pairing Code, API Key, and conversation traffic are not protected by TLS. `v0.4.0` also has no built-in brute-force protection for login or rate limiting for the Caller API. Public deployments should add these controls at the reverse proxy or cloud firewall.
+When using an IP address over HTTP, the Owner Password, Pairing Code, API Key, and conversation traffic are not protected by TLS. `v0.5.0` also has no built-in brute-force protection for login or rate limiting for the Caller API. Public deployments should add these controls at the reverse proxy or cloud firewall.
 
 ### Runtime and Data
 
@@ -475,7 +475,7 @@ Build the Consoles and all Release binaries:
 
 ```bash
 ./scripts/build_web.sh
-./scripts/build_release.sh v0.4.0
+./scripts/build_release.sh v0.5.0
 ```
 
 Artifacts are written directly to `dist/`; no extra archive is generated.

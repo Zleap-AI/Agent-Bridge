@@ -104,6 +104,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: go test ./internal/infra ./cmd/bridge
+      - name: Validate PowerShell release scripts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          [void][scriptblock]::Create((Get-Content scripts/build_release.ps1 -Raw))
+          [void][scriptblock]::Create((Get-Content dist/install-local.ps1 -Raw))
       - name: Smoke native Unix binaries
         if: runner.os != 'Windows'
         shell: bash

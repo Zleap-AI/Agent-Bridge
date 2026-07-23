@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Zleap-AI/Agent-Bridge/releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-v0.4.0-18181b" /></a>
+  <a href="https://github.com/Zleap-AI/Agent-Bridge/releases/latest"><img alt="Version" src="https://img.shields.io/badge/version-v0.5.0-18181b" /></a>
   <img alt="Go" src="https://img.shields.io/badge/Go-1.25%2B-00ADD8" />
   <img alt="Protocol" src="https://img.shields.io/badge/ACP-v1%20%7C%20JSON--RPC%202.0-2563eb" />
   <img alt="Platforms" src="https://img.shields.io/badge/Local-macOS%20%7C%20Windows%20%7C%20Linux-18181b" />
@@ -202,7 +202,7 @@ macOS 使用 `launchd`。Linux 快速安装目前要求 `systemd`，并会尝试
 
 #### Windows
 
-1. 从 [GitHub Releases](https://github.com/Zleap-AI/Agent-Bridge/releases/latest) 下载 `agent-bridge_v0.4.0_windows_amd64.exe` 或 ARM64 版本。
+1. 从 [GitHub Releases](https://github.com/Zleap-AI/Agent-Bridge/releases/latest) 下载 `agent-bridge_v0.5.0_windows_amd64.exe` 或 ARM64 版本。
 2. 将文件改名为 `agent-bridge.exe`，双击运行。
 3. 打开 [http://localhost:9202](http://localhost:9202)。
 
@@ -217,8 +217,8 @@ Get-Content "$env:USERPROFILE\.agent-bridge\logs\$(Get-Date -Format yyyy-MM-dd).
 不希望注册后台服务时，可以从 Release 下载原始二进制：
 
 ```bash
-chmod +x agent-bridge_v0.4.0_darwin_arm64
-./agent-bridge_v0.4.0_darwin_arm64
+chmod +x agent-bridge_v0.5.0_darwin_arm64
+./agent-bridge_v0.5.0_darwin_arm64
 ```
 
 ### 部署 Server
@@ -340,7 +340,7 @@ curl -N -X POST \
   -d '{"content":[{"type":"text","text":"解释当前目录的项目结构"}]}'
 ```
 
-`v0.4.0` 只接受 `text` 内容块，单次 Message 文本总量最多为 128 KiB。`image` 等类型会返回 `UNSUPPORTED_CONTENT_TYPE`，超限文本返回 `PAYLOAD_TOO_LARGE`。
+`v0.5.0` 只接受 `text` 内容块，单次 Message 文本总量最多为 128 KiB。`image` 等类型会返回 `UNSUPPORTED_CONTENT_TYPE`，超限文本返回 `PAYLOAD_TOO_LARGE`。
 
 #### SSE 事件
 
@@ -352,7 +352,7 @@ curl -N -X POST \
 | `done` | Message 正常结束 |
 | `error` | 结构化错误码与可读信息 |
 
-调用方断开 SSE 只会停止转发，不会终止本地 Agent。`v0.4.0` 暂不提供远程取消接口。
+调用方断开 SSE 只会停止转发，不会终止本地 Agent。`v0.5.0` 暂不提供远程取消接口。
 
 单次调用的推理与回答文本合计最多为 2 MiB。超过上限时会发送 `PAYLOAD_TOO_LARGE`，已接收的部分仍保存在 Device，Agent 进程不会因此断开。
 
@@ -373,7 +373,7 @@ curl -N -X POST \
 
 API Key 可以调用全部 Device，但不能访问 Pairing、API Key、Device 删除等管理接口。Key 不自动过期，可由 Owner 随时撤销。
 
-直接使用 IP 和 HTTP 时，Owner Password、Pairing Code、API Key 与对话流量不会被 TLS 加密。`v0.4.0` 也未内置登录防爆破或 Caller API 限流，公开部署应在反向代理或云防火墙中补充限制。
+直接使用 IP 和 HTTP 时，Owner Password、Pairing Code、API Key 与对话流量不会被 TLS 加密。`v0.5.0` 也未内置登录防爆破或 Caller API 限流，公开部署应在反向代理或云防火墙中补充限制。
 
 ### 运行与数据
 
@@ -475,7 +475,7 @@ go run ./cmd/server serve --data-dir ./.agent-bridge-server
 
 ```bash
 ./scripts/build_web.sh
-./scripts/build_release.sh v0.4.0
+./scripts/build_release.sh v0.5.0
 ```
 
 产物直接写入 `dist/`，不生成额外压缩包。

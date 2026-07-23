@@ -9,7 +9,7 @@ log() { printf '[release-artifacts] %s\n' "$*"; }
 fail() { printf '[release-artifacts] ERROR: %s\n' "$*" >&2; exit 1; }
 
 [[ -n "$dist_dir" && -d "$dist_dir" ]] || fail "usage: $0 DIST_DIR VERSION"
-[[ "$version" =~ ^v[A-Za-z0-9._-]+$ ]] || fail "version must be a release tag such as v0.4.0"
+[[ "$version" =~ ^v[A-Za-z0-9._-]+$ ]] || fail "version must be a release tag such as v0.5.0"
 command -v go >/dev/null 2>&1 || fail "go is required to inspect cross-platform binaries"
 
 dist_dir="$(cd "$dist_dir" && pwd)"
@@ -34,8 +34,8 @@ for spec in "${binary_specs[@]}"; do
   printf '%s\n' "$name" >>"${work_dir}/expected-files"
   printf '%s\n' "$name" >>"${work_dir}/expected-checksums"
 done
-printf '%s\n' install-local.sh install-server.sh >>"${work_dir}/expected-files"
-printf '%s\n' install-local.sh install-server.sh >>"${work_dir}/expected-checksums"
+printf '%s\n' install-local.sh install-local.ps1 install-server.sh >>"${work_dir}/expected-files"
+printf '%s\n' install-local.sh install-local.ps1 install-server.sh >>"${work_dir}/expected-checksums"
 printf '%s\n' SHA256SUMS >>"${work_dir}/expected-files"
 
 : >"${work_dir}/actual-files"
@@ -68,6 +68,7 @@ for installer in install-local.sh install-server.sh; do
   [[ -x "${dist_dir}/${installer}" ]] || fail "${installer} is not executable before upload"
   bash -n "${dist_dir}/${installer}" || fail "${installer} has invalid shell syntax"
 done
+[[ -f "${dist_dir}/install-local.ps1" ]] || fail "install-local.ps1 is missing"
 
 awk 'NF >= 2 { name = $2; sub(/^\*/, "", name); print name }' \
   "${dist_dir}/SHA256SUMS" >"${work_dir}/actual-checksums"
@@ -83,4 +84,4 @@ else
   (cd "$dist_dir" && shasum -a 256 --check SHA256SUMS)
 fi
 
-log "verified 8 executable targets, 2 installers, and SHA256SUMS for ${version}"
+log "verified 8 executable targets, 3 installers, and SHA256SUMS for ${version}"

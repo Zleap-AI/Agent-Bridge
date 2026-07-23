@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -107,11 +109,27 @@ func waitForProcessExit(t *testing.T, pid int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		err := syscall.Kill(pid, 0)
-		if errors.Is(err, syscall.ESRCH) {
+		if processExited(pid) {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatalf("process %d is still alive after ProcessManager cleanup", pid)
+}
+
+func processExited(pid int) bool {
+	if err := syscall.Kill(pid, 0); errors.Is(err, syscall.ESRCH) {
+		return true
+	}
+	if runtime.GOOS == "linux" {
+		stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+		if errors.Is(err, os.ErrNotExist) {
+			return true
+		}
+		closingParen := strings.LastIndex(string(stat), ") ")
+		return err == nil && closingParen >= 0 && len(stat) > closingParen+2 &&
+			(stat[closingParen+2] == 'Z' || stat[closingParen+2] == 'X')
+	}
+	state, err := exec.Command("ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output()
+	return err != nil || strings.HasPrefix(strings.TrimSpace(string(state)), "Z")
 }
