@@ -90,8 +90,8 @@ Agent-Bridge Local 是日常入口。只在当前电脑使用 Agent 时，不需
 
 | 系统 | 推荐方式 |
 | --- | --- |
-| Windows | 从 [GitHub Releases](https://github.com/Zleap-AI/Agent-Bridge/releases/latest) 下载对应版本并双击运行 |
-| macOS / Linux | 按[开发者指南中的一键安装方式](#安装-local)完成安装，安装成功后会自动打开 Local Console |
+| Windows | `iwr -useb https://raw.githubusercontent.com/Zleap-AI/Agent-Bridge/main/scripts/install-local.ps1 \| iex` |
+| macOS / Linux | `curl -fsSL https://raw.githubusercontent.com/Zleap-AI/Agent-Bridge/main/scripts/install-local.sh \| bash` |
 
 普通用户不需要安装 Go，也不需要重新构建。Windows 首次运行会为当前用户注册后台自启动；macOS 和 Linux 的一键安装同样会注册当前用户的后台服务。
 
@@ -188,13 +188,21 @@ curl -fsSL https://raw.githubusercontent.com/Zleap-AI/Agent-Bridge/main/scripts/
 
 macOS 使用 `launchd`。Linux 快速安装目前要求 `systemd`，并会尝试启用当前用户的 linger，让 Local 在退出登录后继续运行。如果系统拒绝，安装仍会完成并打印恢复命令。容器、WSL 或非 `systemd` 发行版请直接运行二进制。
 
-#### Windows
+#### Windows 一键安装
 
-1. 从 [GitHub Releases](https://github.com/Zleap-AI/Agent-Bridge/releases/latest) 下载 `agent-bridge_v0.4.0_windows_amd64.exe` 或 ARM64 版本。
-2. 将文件改名为 `agent-bridge.exe`，双击运行。
-3. 打开 [http://localhost:9202](http://localhost:9202)。
+```powershell
+iwr -useb https://raw.githubusercontent.com/Zleap-AI/Agent-Bridge/main/scripts/install-local.ps1 | iex
+```
 
-运行日志按日期保存在 `%USERPROFILE%\.agent-bridge\logs\`。可以在 PowerShell 中持续查看当天日志：
+脚本会下载匹配当前系统架构（x64 / ARM64）的最新稳定版二进制、校验 SHA-256、安装到 `%LOCALAPPDATA%\Agent-Bridge\bin\`、添加到用户 PATH、注册开机自启，等待健康检查通过后打开 Local Console。重复运行同一命令即可升级；如果新版本启动失败，脚本会恢复旧版本。
+
+也可以从 [GitHub Releases](https://github.com/Zleap-AI/Agent-Bridge/releases/latest) 直接下载对应版本，改名为 `agent-bridge.exe` 后运行：
+
+```powershell
+.\agent-bridge.exe --background
+```
+
+程序会自动注册开机自启到 `HKCU\...\Run\Agent-Bridge`。运行日志按日期保存在 `%USERPROFILE%\.agent-bridge\logs\`，可以在 PowerShell 中持续查看：
 
 ```powershell
 Get-Content "$env:USERPROFILE\.agent-bridge\logs\$(Get-Date -Format yyyy-MM-dd).log" -Wait
@@ -421,13 +429,24 @@ curl -fsSL https://raw.githubusercontent.com/Zleap-AI/Agent-Bridge/main/scripts/
 curl -fsSL https://raw.githubusercontent.com/Zleap-AI/Agent-Bridge/main/scripts/install-local.sh | bash -s -- --uninstall --purge
 ```
 
-Windows 先撤销当前用户的后台自启动，再删除下载的程序：
+Windows 安装脚本也支持卸载：
+
+```powershell
+.\scripts\install-local.ps1 -Uninstall
+```
+
+追加 `-Purge` 会同时删除本地配置和历史：
+
+```powershell
+.\scripts\install-local.ps1 -Uninstall -Purge
+```
+
+手动卸载时，先撤销自启动注册，再删除程序：
 
 ```powershell
 .\agent-bridge.exe --uninstall
+rm %LOCALAPPDATA%\Agent-Bridge\bin\agent-bridge.exe
 ```
-
-需要同时清除本地配置和历史时，再手动删除 `%USERPROFILE%\.agent-bridge`。
 
 ### 目录结构
 

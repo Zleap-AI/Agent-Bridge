@@ -40,3 +40,8 @@ Thumbs.db
 
 # test
 test/
+
+# 运行时会话数据
+data/agents/
+cmd/bridge/data/
+cmd/server/data/

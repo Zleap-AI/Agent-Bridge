@@ -121,11 +121,15 @@ func isInvalidSessionStreamError(chunk internal.StreamChunk) bool {
 // streamPrompt 流式 prompt 处理 — 推送流式块 + 自动保存消息
 // Lzm 2026-07-10
 func (r *RequestRouter) streamPrompt(ctx context.Context, msg *protocol.ANPMessage, a agent.Agent, agentID, sessionID, userText string, promptBlocks []PromptBlock, sessionMgr *SessionManager) *protocol.ANPMessage {
+	// 提前设置当前 invoke requestID，供同步路径下的权限/elicitation 回调使用
+	r.setCurrentRequestID(sessionID, msg.ID)
+
 	// 构建 ACP prompt 请求（透传原始 prompt 结构）
 	acpReq := r.buildACPPromptReq(msg.ID, sessionID, promptBlocks)
 
 	chunkCh, err := a.Stream(ctx, acpReq)
 	if err != nil {
+		r.clearCurrentRequestID(sessionID)
 		return protocol.NewErrorResponse(msg.ID, -31007,
 			fmt.Sprintf("发送 prompt 到 Agent 失败: %v", err))
 	}
@@ -136,6 +140,13 @@ func (r *RequestRouter) streamPrompt(ctx context.Context, msg *protocol.ANPMessa
 
 	// 在后台读取流式块，收集消息用于持久化
 	go func() {
+		// 在 goroutine 中重新设置 requestID（覆盖外层设置），确保异步处理的
+		// 整个生命周期内 requestID 都可用。defer 在 goroutine 结束时清理。
+		// BUGFIX(Lzm 2026-07-23): 之前在外层 defer clear，但 goroutine 刚
+		// 启动时 streamPrompt 就返回了，导致 requestID 被提前清除，权限回
+		// 调无法获取正确的 requestID，转发到 Server 的事件被网关丢弃。
+		r.setCurrentRequestID(sessionID, msg.ID)
+		defer r.clearCurrentRequestID(sessionID)
 		var thoughtParts, responseParts []string
 		streamOutputBytes := 0
 		outputLimitExceeded := false
@@ -404,6 +415,10 @@ func (r *RequestRouter) drainAndClearCancel(chunkCh <-chan internal.StreamChunk,
 // 使 SaaS 发送 session/cancel 后能主动中断阻塞等待
 // Lzm 2026-07-20
 func (r *RequestRouter) blockingPrompt(ctx context.Context, msg *protocol.ANPMessage, a agent.Agent, agentID, sessionID, userText string, promptBlocks []PromptBlock, sessionMgr *SessionManager) *protocol.ANPMessage {
+	// 记录当前 invoke requestID，供权限/elicitation 回调使用
+	r.setCurrentRequestID(sessionID, msg.ID)
+	defer r.clearCurrentRequestID(sessionID)
+
 	acpReq := r.buildACPPromptReq(msg.ID, sessionID, promptBlocks)
 
 	// 创建可取消 context，用于中断阻塞的 a.Send()

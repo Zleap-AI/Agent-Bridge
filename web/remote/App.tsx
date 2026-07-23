@@ -20,9 +20,10 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, isAbortError } from "../shared/api/http";
-import { remoteApi } from "../shared/api/remote";
+import { remoteApi, sendPermissionResponse } from "../shared/api/remote";
 import { Conversation } from "../shared/components/Conversation";
 import {
+  AuthorizationDialog,
   Button,
   ConfirmDialog,
   CopyButton,
@@ -175,6 +176,8 @@ export function RemoteApp() {
   const [deviceSettingsError, setDeviceSettingsError] = useState("");
   const [confirmDeleteDevice, setConfirmDeleteDevice] = useState(false);
   const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false);
+  const [permissionRequest, setPermissionRequest] = useState<{ sessionId: string; message: string; toolCall?: unknown; agentId: string } | null>(null);
+  const [permissionDialogLoading, setPermissionDialogLoading] = useState(false);
   const deviceLoadGeneration = useRef(0);
   const sessionLoadGeneration = useRef(0);
   const messageLoadGeneration = useRef(0);
@@ -394,7 +397,55 @@ export function RemoteApp() {
   };
 
   const updateStream = (assistantId: string, reasoningId: string, event: StreamEvent, generation: number, contextKey: string, agentId: string) => {
+    // DEBUG(Lzm 2026-07-23): 记录所有流式事件，排查授权对话框未渲染问题
+    if (event.type === "permission_request") {
+      console.log("[DEBUG] updateStream 收到 permission_request 事件:", JSON.stringify(event));
+      console.log("[DEBUG] generation 检查:", generation, "===", streamGeneration.current, generation === streamGeneration.current);
+      console.log("[DEBUG] contextKey 检查:", workspaceContextRef.current, "===", contextKey, workspaceContextRef.current === contextKey);
+      console.log("[DEBUG] session_id:", event.session_id, "| message:", event.message);
+    }
     if (generation !== streamGeneration.current || workspaceContextRef.current !== contextKey) return;
+
+    // 处理权限请求事件 — 弹出授权对话框
+    if (event.type === "permission_request") {
+      if (event.session_id) {
+        console.log("[DEBUG] setPermissionRequest 即将调用, sessionId:", event.session_id);
+        setPermissionRequest({
+          sessionId: event.session_id,
+          message: event.message || "",
+          toolCall: event.tool_call,
+          agentId: event.agent_id || agentId,
+        });
+        console.log("[DEBUG] setPermissionRequest 调用完成");
+      } else {
+        console.warn("[DEBUG] permission_request 事件 session_id 为空:", JSON.stringify(event));
+      }
+      return;
+    }
+
+    // 处理自动批准通知 — 可展示系统消息
+    if (event.type === "auto_approve") {
+      setMessages((current) => [
+        ...current,
+        { id: `auto-approve-${Date.now()}`, role: "system", content: [{ type: "text", text: `[${event.message || "权限已自动批准"}]` }] },
+      ]);
+      return;
+    }
+
+    // 处理 elicitation 请求 — 暂简化处理（自动批准）
+    if (event.type === "elicitation_request") {
+      // 自动批准 elicitation（可改进为弹出对话框让用户填写表单）
+      const devId = selectedDeviceId;
+      const agId = selectedAgentId;
+      if (devId && agId && event.session_id) {
+        void sendPermissionResponse(devId, agId, event.session_id, {
+          action: "accept",
+          allowed: true,
+        }).catch(() => {});
+      }
+      return;
+    }
+
     if (event.type === "session.updated") {
       if (event.sessionId && event.sessionId !== sessionIdRef.current) {
         messageLoadGeneration.current += 1;
@@ -525,6 +576,54 @@ export function RemoteApp() {
   const logout = async () => {
     try { await remoteApi.logout(); } catch { /* session may already be gone */ }
     setPhase("login"); setDrawer(null); setDevices([]);
+  };
+
+  // ─── 权限对话框处理函数 ──────────────────────────────────────
+
+  const handlePermissionAllow = async () => {
+    const req = permissionRequest;
+    if (!req || !selectedDeviceId || !req.agentId) return;
+    setPermissionDialogLoading(true);
+    try {
+      await sendPermissionResponse(selectedDeviceId, req.agentId, req.sessionId, {
+        allowed: true,
+        permission_mode: "request_approval",
+      });
+      setPermissionRequest(null);
+    } catch { /* error handled by UI feedback */ }
+    finally { setPermissionDialogLoading(false); }
+  };
+
+  const handlePermissionDeny = async () => {
+    const req = permissionRequest;
+    if (!req || !selectedDeviceId || !req.agentId) return;
+    setPermissionDialogLoading(true);
+    try {
+      await sendPermissionResponse(selectedDeviceId, req.agentId, req.sessionId, {
+        allowed: false,
+      });
+      setPermissionRequest(null);
+    } catch { /* error handled by UI feedback */ }
+    finally { setPermissionDialogLoading(false); }
+  };
+
+  const handlePermissionAllowAlways = async () => {
+    const req = permissionRequest;
+    if (!req || !selectedDeviceId || !req.agentId) return;
+    setPermissionDialogLoading(true);
+    try {
+      await sendPermissionResponse(selectedDeviceId, req.agentId, req.sessionId, {
+        allowed: true,
+        permission_mode: "auto_approve",
+      });
+      setPermissionRequest(null);
+    } catch { /* error handled by UI feedback */ }
+    finally { setPermissionDialogLoading(false); }
+  };
+
+  const handlePermissionClose = () => {
+    if (permissionDialogLoading) return;
+    setPermissionRequest(null);
   };
 
   if (phase === "loading") return <div className="page-loading"><Spinner /></div>;
@@ -669,6 +768,17 @@ export function RemoteApp() {
         agents={agents}
         defaultAgentId={selectedAgentId}
         loading={sessionsLoading}
+      />
+      <AuthorizationDialog
+        open={Boolean(permissionRequest)}
+        title="权限请求"
+        message={permissionRequest?.message || ""}
+        toolCall={permissionRequest?.toolCall}
+        loading={permissionDialogLoading}
+        onAllow={handlePermissionAllow}
+        onDeny={handlePermissionDeny}
+        onAllowAlways={handlePermissionAllowAlways}
+        onClose={handlePermissionClose}
       />
       <ConfirmDialog open={Boolean(deleteKey)} title={t("remote.revokeKey")} body={t("remote.revokeKeyBody")} confirmLabel={t("common.delete")} danger loading={keysLoading} onCancel={() => setDeleteKey(null)} onConfirm={() => void revokeKey()} />
       <ConfirmDialog open={confirmDeleteDevice} title={t("remote.deleteDeviceTitle")} body={t("remote.deleteDeviceBody")} confirmLabel={t("remote.deleteDevice")} danger loading={savingDevice} onCancel={() => setConfirmDeleteDevice(false)} onConfirm={() => void deleteDevice()} />

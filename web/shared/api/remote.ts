@@ -5,6 +5,7 @@ import type {
   DeviceInfo,
   MessageInfo,
   PairingCodeInfo,
+  PermissionMode,
   ServerStatus,
   SessionInfo,
   StreamEvent,
@@ -71,7 +72,62 @@ export function normalizeRemoteStreamEvent(event: string, data: string): StreamE
     return { type: "error", code: String(nested.code || value.code || "INTERNAL_ERROR"), message: String(nested.message || value.message || "Agent request failed") };
   }
   if (event === "done") return { type: "done" };
+  if (event === "permission_request") {
+    return {
+      type: "permission_request",
+      session_id: String(value.session_id || ""),
+      agent_id: String(value.agent_id || ""),
+      message: String(value.message || ""),
+      tool_call: value.tool_call as unknown,
+      permission_mode: String(value.permission_mode || "request_approval") as PermissionMode,
+    };
+  }
+  if (event === "elicitation_request") {
+    return {
+      type: "elicitation_request",
+      session_id: String(value.session_id || ""),
+      agent_id: String(value.agent_id || ""),
+      message: String(value.message || ""),
+      mode: String(value.mode || ""),
+      url: String(value.url || ""),
+    };
+  }
+  if (event === "auto_approve") {
+    return {
+      type: "auto_approve",
+      session_id: String(value.session_id || ""),
+      agent_id: String(value.agent_id || ""),
+      message: String(value.message || ""),
+    };
+  }
+  if (event === "tool_call") {
+    return {
+      type: "tool_call",
+      tool_call_id: String(value.tool_call_id || ""),
+      title: String(value.title || ""),
+      kind: String(value.kind || ""),
+      status: String(value.status || ""),
+    };
+  }
   return null;
+}
+
+/** 发送权限/elicitation 响应到 Server */
+export async function sendPermissionResponse(
+  deviceId: string,
+  agentId: string,
+  sessionId: string,
+  options: {
+    allowed?: boolean;
+    permission_mode?: string;
+    action?: string;
+    content?: unknown;
+  },
+): Promise<void> {
+  await requestJSON(
+    `${API}/devices/${pathPart(deviceId)}/agents/${pathPart(agentId)}/sessions/${pathPart(sessionId)}/permission`,
+    { method: "POST", body: JSON.stringify(options) },
+  );
 }
 
 export function normalizeCallStatus(value: unknown): CallRecord["status"] {
@@ -183,8 +239,15 @@ export const remoteApi = {
       `${API}/devices/${pathPart(deviceId)}/agents/${pathPart(agentId)}/sessions/${pathPart(sessionId)}/messages`,
       { content: [{ type: "text", text }] },
       ({ event, data }) => {
+        // DEBUG(Lzm 2026-07-23): 记录原始 SSE 事件，排查授权对话框未渲染问题
+        if (event === "permission_request") {
+          console.log("[DEBUG] streamRequest 收到原始 permission_request SSE, data:", data);
+        }
         const normalized = normalizeRemoteStreamEvent(event, data);
         if (!normalized) return;
+        if (normalized.type === "permission_request") {
+          console.log("[DEBUG] normalizeRemoteStreamEvent 输出:", JSON.stringify(normalized));
+        }
         onEvent(normalized);
         if (normalized.type === "error" || normalized.type === "done") completed = true;
       },

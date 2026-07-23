@@ -7,7 +7,7 @@ export interface AgentInfo {
 }
 
 // 授权模式
-export type PermissionMode = "request_approval" | "auto_approve" | "full_access";
+export type PermissionMode = "request_approval" | "auto_approve" | "full_access" | "session_approval";
 
 // 权限请求事件
 export interface PermissionRequestEvent {
@@ -131,7 +131,15 @@ export type StreamEvent =
   | { type: "reasoning.delta"; text: string }
   | { type: "session.updated"; sessionId: string }
   | { type: "done" }
-  | { type: "error"; code: string; message: string };
+  | { type: "error"; code: string; message: string }
+  // 权限请求事件（Agent 请求用户授权执行操作）
+  | { type: "permission_request"; session_id: string; agent_id?: string; message?: string; tool_call?: unknown; params?: unknown; permission_mode?: PermissionMode }
+  // elicitation 请求事件（Agent 请求用户输入表单或确认 URL）
+  | { type: "elicitation_request"; session_id: string; agent_id?: string; message?: string; mode?: string; url?: string; requested_schema?: unknown }
+  // 自动批准通知（auto_approve 或 session_approval 已授权过）
+  | { type: "auto_approve"; session_id?: string; agent_id?: string; message?: string }
+  // 工具调用事件
+  | { type: "tool_call"; tool_call_id?: string; title?: string; kind?: string; status?: string; locations?: string[] };
 
 // ─── 诊断数据类型 ──────────────────────────────────────────────────────────
 

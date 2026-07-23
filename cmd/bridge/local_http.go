@@ -539,8 +539,11 @@ func (app *localApplication) handleAdminWebSocket(w http.ResponseWriter, r *http
 		return infra.WriteJSON(conn, value)
 	}
 	router := service.NewRequestRouter(app.registry)
-	router.SetupPermissionCallbacks(app.sessions)
-	router.LocalMode = true
+	// 注意：不再调用 SetupPermissionCallbacks，避免覆盖 Tunnel Router
+	// 设置的全局权限回调。Agent 上的 permissionCB 是单槽的，被本地控制台
+	// 覆盖后，Server 发送的请求触发权限请求时会被发往本地控制台而非 Server。
+	// 本地模式（无 Tunnel）时 permissionCB 为空，权限自动批准。
+	// Lzm 2026-07-23
 	router.SetStreamCallback(func(requestID, chunkType, text string) error {
 		return write(protocol.NewStreamUpdate(requestID, chunkType, text))
 	})

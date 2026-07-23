@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -583,13 +584,28 @@ func (c *deviceConnection) dispatch(message protocol.ANPMessage) {
 	if message.Method == "session/update" {
 		var update protocol.ANPStreamUpdate
 		if err := json.Unmarshal(message.Params, &update); err != nil {
+			slog.Warn("解析 session/update 参数失败",
+				"device", c.deviceID,
+				"error", err,
+			)
 			return
 		}
 		c.pendingMu.RLock()
 		item := c.pending[update.RequestID]
 		c.pendingMu.RUnlock()
 		if item != nil {
+			slog.Debug("交付 session/update 事件到 pending item",
+				"device", c.deviceID,
+				"request_id", update.RequestID,
+				"type", update.Type,
+			)
 			item.deliver(StreamEvent{Type: update.Type, Content: update.Content})
+		} else {
+			slog.Warn("session/update 找不到匹配的 pending item",
+				"device", c.deviceID,
+				"request_id", update.RequestID,
+				"type", update.Type,
+			)
 		}
 		return
 	}

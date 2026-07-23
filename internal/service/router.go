@@ -59,6 +59,13 @@ type RequestRouter struct {
 	// Lzm 2026-07-22
 	sessionApprovedSessions map[string]map[string]bool
 	approveMu              sync.Mutex
+
+	// currentRequestIDs 跟踪当前正在处理的 invoke requestID，按 sessionID 索引。
+	// 当权限回调或 elicitation 回调被触发时，使用此 requestID 转发事件，
+	// 确保 Server 网关能通过 requestID 将事件路由到正确的 pending item。
+	// Lzm 2026-07-23
+	currentRequestIDs map[string]string
+	reqIDMu           sync.Mutex
 }
 
 // NewRequestRouter 创建消息路由器。
@@ -66,9 +73,10 @@ type RequestRouter struct {
 // Lzm 2026-07-21
 func NewRequestRouter(registry *agent.AgentRegistry) *RequestRouter {
 	r := &RequestRouter{
-		registry:               registry,
-		pendingPermissions:     make(map[string]chan internal.PermissionResult),
+		registry:                registry,
+		pendingPermissions:      make(map[string]chan internal.PermissionResult),
 		sessionApprovedSessions: make(map[string]map[string]bool),
+		currentRequestIDs:       make(map[string]string),
 	}
 	return r
 }
@@ -141,6 +149,8 @@ func (r *RequestRouter) setAgentElicitationCB(a agent.Agent) {
 				"session", truncateString(req.SessionID, 16),
 				"mode", req.Mode,
 			)
+			// 使用存储的当前 invoke requestID，确保 Server 网关能路由到正确请求
+			reqID := r.getCurrentRequestID(req.SessionID)
 			info := internal.PermissionRequestInfo{
 				SessionID: req.SessionID,
 				AgentID:   a.ID(),
@@ -149,7 +159,7 @@ func (r *RequestRouter) setAgentElicitationCB(a agent.Agent) {
 			}
 			infoJSON, _ := json.Marshal(info)
 			// 将 elicitation 请求作为权限请求类型的 streamCB 通知转发
-			if err := r.streamCB("", "elicitation_request", string(infoJSON)); err != nil {
+			if err := r.streamCB(reqID, "elicitation_request", string(infoJSON)); err != nil {
 				slog.Warn("转发 elicitation 请求失败",
 					"agent", a.ID(),
 					"error", err,
@@ -294,6 +304,7 @@ func (r *RequestRouter) setAgentPermissionCB(a agent.Agent, sessionMgr *SessionM
 				"session", truncateString(sessionID, 16),
 			)
 			if r.streamCB != nil {
+				reqID := r.getCurrentRequestID(sessionID)
 				info := internal.PermissionRequestInfo{
 					SessionID:      sessionID,
 					AgentID:        a.ID(),
@@ -303,7 +314,7 @@ func (r *RequestRouter) setAgentPermissionCB(a agent.Agent, sessionMgr *SessionM
 					PermissionMode: permMode,
 				}
 				infoJSON, _ := json.Marshal(info)
-				_ = r.streamCB("", "auto_approve", string(infoJSON))
+				_ = r.streamCB(reqID, "auto_approve", string(infoJSON))
 			}
 			return true, "auto_approve", nil
 
@@ -325,6 +336,7 @@ func (r *RequestRouter) setAgentPermissionCB(a agent.Agent, sessionMgr *SessionM
 				)
 				// 但通过 streamCB 推送通知（让前端知道已批准）
 				if r.streamCB != nil {
+					reqID := r.getCurrentRequestID(sessionID)
 					info := internal.PermissionRequestInfo{
 						SessionID:      sessionID,
 						AgentID:        a.ID(),
@@ -334,7 +346,7 @@ func (r *RequestRouter) setAgentPermissionCB(a agent.Agent, sessionMgr *SessionM
 						PermissionMode: permMode,
 					}
 					infoJSON, _ := json.Marshal(info)
-					_ = r.streamCB("", "auto_approve", string(infoJSON))
+					_ = r.streamCB(reqID, "auto_approve", string(infoJSON))
 				}
 				return true, permMode, nil
 			}
@@ -352,6 +364,15 @@ func (r *RequestRouter) setAgentPermissionCB(a agent.Agent, sessionMgr *SessionM
 			}()
 
 			if r.streamCB != nil {
+				// 使用存储的当前 invoke requestID
+				reqID := r.getCurrentRequestID(sessionID)
+				// BUGFIX(Lzm 2026-07-23): reqID 为空说明此 Router 没有该
+				// session 的当前 invoke context，权限请求不是通过本 Router
+				// 发起的（如来自 Local Console 而本 Router 是 Tunnel Router），
+				// 此时不能转发到 Server（Server 无对应 pending item），直接批准。
+				if reqID == "" {
+					return true, "", nil
+				}
 				info := internal.PermissionRequestInfo{
 					SessionID:      sessionID,
 					AgentID:        a.ID(),
@@ -361,7 +382,16 @@ func (r *RequestRouter) setAgentPermissionCB(a agent.Agent, sessionMgr *SessionM
 					PermissionMode: permMode,
 				}
 				infoJSON, _ := json.Marshal(info)
-				_ = r.streamCB("", "permission_request", string(infoJSON))
+				if err := r.streamCB(reqID, "permission_request", string(infoJSON)); err != nil {
+					// BUGFIX(Lzm 2026-07-23): streamCB 失败说明隧道已断开，
+					// 此时不能阻塞等待用户响应（会超时 5 分钟），直接自动批准。
+					slog.Warn("转发权限请求失败（隧道断开），自动批准",
+						"agent", a.ID(),
+						"session", truncateString(sessionID, 16),
+						"error", err,
+					)
+					return true, "", nil
+				}
 
 				select {
 				case result := <-respCh:
@@ -409,6 +439,19 @@ func (r *RequestRouter) setAgentPermissionCB(a agent.Agent, sessionMgr *SessionM
 
 			// 将权限请求转发为流式事件推送给前端
 			if r.streamCB != nil {
+				// 使用存储的当前 invoke requestID，确保 Server 网关能路由到正确请求
+				reqID := r.getCurrentRequestID(sessionID)
+				// BUGFIX(Lzm 2026-07-23): reqID 为空说明此 Router 没有该
+				// session 的当前 invoke context，权限请求不是通过本 Router
+				// 发起的（如来自 Local Console 而本 Router 是 Tunnel Router），
+				// 此时不能转发到 Server（Server 无对应 pending item），直接批准。
+				if reqID == "" {
+					slog.Debug("权限请求自动批准（reqID 为空，非本 Router 发起的请求）",
+						"agent", a.ID(),
+						"session", truncateString(sessionID, 16),
+					)
+					return true, "", nil
+				}
 				// 使用流式事件类型 "permission_request"
 				info := internal.PermissionRequestInfo{
 					SessionID:      sessionID,
@@ -419,7 +462,16 @@ func (r *RequestRouter) setAgentPermissionCB(a agent.Agent, sessionMgr *SessionM
 					PermissionMode: permMode,
 				}
 				infoJSON, _ := json.Marshal(info)
-				_ = r.streamCB("", "permission_request", string(infoJSON))
+				if err := r.streamCB(reqID, "permission_request", string(infoJSON)); err != nil {
+					// BUGFIX(Lzm 2026-07-23): streamCB 失败说明隧道已断开，
+					// 此时不能阻塞等待用户响应（会超时 5 分钟），直接自动批准。
+					slog.Warn("转发权限请求失败（隧道断开），自动批准",
+						"agent", a.ID(),
+						"session", truncateString(sessionID, 16),
+						"error", err,
+					)
+					return true, "", nil
+				}
 
 				// 等待用户决策（带超时）
 				select {
@@ -441,8 +493,8 @@ func (r *RequestRouter) setAgentPermissionCB(a agent.Agent, sessionMgr *SessionM
 				}
 			}
 
-			// 无回调时自动批准（不应到达此处，作为安全兜底）
-			slog.Warn("权限请求自动批准（无前端回调）",
+			// 无回调时自动批准（应为无 Tunnel 时的本地模式回调，由 Agent 默认 auto-approve）
+			slog.Debug("权限请求自动批准（无前端回调，Agent auto-approve 兜底）",
 				"agent", a.ID(),
 				"session", truncateString(sessionID, 16),
 			)
@@ -623,3 +675,30 @@ type StreamCallback func(requestID string, chunkType string, text string) error
 // InvokeFinalCallback 流式调用最终响应回调（由 TunnelService 设置）
 // 在流式输出全部完成后，发送 invoke 的最终 JSON-RPC 结果
 type InvokeFinalCallback func(requestID string, result json.RawMessage, responseError *protocol.ANPError)
+
+// setCurrentRequestID 记录当前正在处理的 invoke requestID。
+// 在调用 a.Stream() 或 a.Send() 之前调用，供权限/elicitation 回调使用。
+// Lzm 2026-07-23
+func (r *RequestRouter) setCurrentRequestID(sessionID, requestID string) {
+	r.reqIDMu.Lock()
+	defer r.reqIDMu.Unlock()
+	r.currentRequestIDs[sessionID] = requestID
+}
+
+// clearCurrentRequestID 清理当前正在处理的 invoke requestID。
+// 在调用 a.Stream() 或 a.Send() 完成后调用。
+// Lzm 2026-07-23
+func (r *RequestRouter) clearCurrentRequestID(sessionID string) {
+	r.reqIDMu.Lock()
+	defer r.reqIDMu.Unlock()
+	delete(r.currentRequestIDs, sessionID)
+}
+
+// getCurrentRequestID 获取指定会话当前正在处理的 invoke requestID。
+// 权限/elicitation 回调中使用此 ID 转发事件，确保 Server 网关能路由到正确请求。
+// Lzm 2026-07-23
+func (r *RequestRouter) getCurrentRequestID(sessionID string) string {
+	r.reqIDMu.Lock()
+	defer r.reqIDMu.Unlock()
+	return r.currentRequestIDs[sessionID]
+}

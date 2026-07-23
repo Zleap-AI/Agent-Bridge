@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
 	"github.com/Zleap-AI/Agent-Bridge/internal/server/apierror"
 	"github.com/Zleap-AI/Agent-Bridge/internal/server/auth"
 	"github.com/Zleap-AI/Agent-Bridge/internal/server/caller"
@@ -69,6 +70,7 @@ func (h *Handler) routes() http.Handler {
 	mux.Handle("POST /api/v1/devices/{device_id}/agents/{agent_id}/sessions", h.callerOnly(http.HandlerFunc(h.createSession)))
 	mux.Handle("GET /api/v1/devices/{device_id}/agents/{agent_id}/sessions/{session_id}/messages", h.callerOnly(http.HandlerFunc(h.messages)))
 	mux.Handle("POST /api/v1/devices/{device_id}/agents/{agent_id}/sessions/{session_id}/messages", h.callerOnly(http.HandlerFunc(h.sendMessage)))
+	mux.Handle("POST /api/v1/devices/{device_id}/agents/{agent_id}/sessions/{session_id}/permission", h.callerOnly(http.HandlerFunc(h.handlePermissionResponse)))
 
 	mux.HandleFunc("GET /openapi.json", h.openapi)
 	mux.HandleFunc("GET /docs", h.docs)
@@ -429,6 +431,11 @@ func (h *Handler) writeStreamEvent(w http.ResponseWriter, event gateway.StreamEv
 		Text string `json:"text"`
 	}
 	_ = json.Unmarshal(event.Content, &content)
+
+	// 尝试解析完整事件内容（用于结构化事件如 permission_request）
+	var eventData map[string]any
+	_ = json.Unmarshal(event.Content, &eventData)
+
 	switch event.Type {
 	case "thought":
 		return false, false, writeSSE(w, "reasoning.delta", map[string]string{"type": "reasoning.delta", "delta": content.Text})
@@ -446,8 +453,116 @@ func (h *Handler) writeStreamEvent(w http.ResponseWriter, event gateway.StreamEv
 		return false, true, writeSSE(w, "error", map[string]any{
 			"type": "error", "error": apierror.New(apierror.CodeAgentUnavailable, content.Text, http.StatusConflict),
 		})
+	case "permission_request":
+		// BUGFIX(Lzm 2026-07-23): 流式事件内容被 NewStreamUpdate 包裹在
+		// {"text": "<原始JSON>"} 格式中。content.Text 是原始 JSON 字符串，
+		// 需要解析后透传，而非直接使用 eventData（eventData 是 {"text": "..."} 包装）。
+		var permissionData map[string]any
+		if content.Text != "" {
+			_ = json.Unmarshal([]byte(content.Text), &permissionData)
+		}
+		if permissionData != nil {
+			return false, false, writeSSE(w, "permission_request", permissionData)
+		}
+		return false, false, writeSSE(w, "permission_request", eventData)
+	case "elicitation_request":
+		// 同 permission_request，需要解析 content.Text 获取真实结构化数据
+		var elicitationData map[string]any
+		if content.Text != "" {
+			_ = json.Unmarshal([]byte(content.Text), &elicitationData)
+		}
+		if elicitationData != nil {
+			return false, false, writeSSE(w, "elicitation_request", elicitationData)
+		}
+		return false, false, writeSSE(w, "elicitation_request", eventData)
+	case "tool_call":
+		// 同 permission_request，需要解析 content.Text 获取真实结构化数据
+		var toolCallData map[string]any
+		if content.Text != "" {
+			_ = json.Unmarshal([]byte(content.Text), &toolCallData)
+		}
+		if toolCallData != nil {
+			return false, false, writeSSE(w, "tool_call", toolCallData)
+		}
+		return false, false, writeSSE(w, "tool_call", eventData)
+	case "auto_approve":
+		// 同 permission_request，需要解析 content.Text 获取真实结构化数据
+		var autoApproveData map[string]any
+		if content.Text != "" {
+			_ = json.Unmarshal([]byte(content.Text), &autoApproveData)
+		}
+		if autoApproveData != nil {
+			return false, false, writeSSE(w, "auto_approve", autoApproveData)
+		}
+		return false, false, writeSSE(w, "auto_approve", eventData)
 	}
 	return false, false, nil
+}
+
+// handlePermissionResponse 处理前端用户对权限/elicitation 请求的响应。
+// 前端在收到 permission_request 或 elicitation_request SSE 事件后，
+// 用户做出授权决策，通过此 HTTP 端点提交到 Server，
+// Server 再通过 WebSocket 转发到 Bridge（session/permission_response）。
+// Lzm 2026-07-23
+func (h *Handler) handlePermissionResponse(w http.ResponseWriter, r *http.Request) {
+	deviceID := r.PathValue("device_id")
+	agentID := r.PathValue("agent_id")
+	sessionID := r.PathValue("session_id")
+
+	if deviceID == "" || agentID == "" || sessionID == "" {
+		writeError(w, apierror.New(apierror.CodeInvalidRequest, "device_id, agent_id and session_id are required", http.StatusBadRequest))
+		return
+	}
+
+	var request struct {
+		Allowed        bool   `json:"allowed"`
+		Reason         string `json:"reason,omitempty"`
+		PermissionMode string `json:"permission_mode,omitempty"`
+		// Elicitation 专用字段：accept / decline / cancel
+		Action string `json:"action,omitempty"`
+		// Elicitation 专用字段：表单数据（JSON string）
+		Content json.RawMessage `json:"content,omitempty"`
+	}
+	if err := decodeJSON(w, r, &request); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	// 构建 session/permission_response ANP 消息
+	// 兼容 session_id 和 sessionId 两种字段名
+	decision := map[string]any{
+		"session_id": sessionID,
+		"sessionId":  sessionID,
+		"agent_id":   agentID,
+		"allowed":    request.Allowed,
+	}
+	if request.Reason != "" {
+		decision["reason"] = request.Reason
+	}
+	if request.PermissionMode != "" {
+		decision["permission_mode"] = request.PermissionMode
+	}
+	// elicitation 响应：携带 action 和 content
+	if request.Action != "" {
+		decision["action"] = request.Action
+	}
+	if request.Content != nil {
+		decision["content"] = request.Content
+	}
+
+	params, _ := json.Marshal(decision)
+	message := protocol.ANPMessage{
+		Method: "session/permission_response",
+		Params: params,
+	}
+
+	// 通过网关发送到 Bridge
+	if _, err := h.gateway.Request(r.Context(), deviceID, message); err != nil {
+		writeError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (h *Handler) ownerOnly(next http.Handler) http.Handler {
