@@ -31,10 +31,13 @@ type StoredMessage struct {
 
 // SessionSummary 会话概要信息
 type SessionSummary struct {
-	SessionID    string `json:"session_id"`
-	CreatedAt    int64  `json:"created_at"` // 时间戳（东八区）
-	UpdatedAt    int64  `json:"updated_at"` // 时间戳（东八区）
-	MessageCount int    `json:"message_count"`
+	SessionID      string `json:"session_id"`
+	Title          string `json:"title"`                   // 会话标题（从首条用户消息提取）
+	CWD            string `json:"cwd,omitempty"`           // 会话关联的工作目录。Lzm 2026-07-21
+	PermissionMode string `json:"permission_mode,omitempty"` // 会话授权模式。Lzm 2026-07-21
+	CreatedAt      int64  `json:"created_at"`              // 时间戳（东八区）
+	UpdatedAt      int64  `json:"updated_at"`              // 时间戳（东八区）
+	MessageCount   int    `json:"message_count"`
 }
 
 // MessageStore 会话消息存储器
@@ -54,9 +57,78 @@ func NewMessageStore(storeDir string) *MessageStore {
 
 // DefaultMessageStore 使用默认路径创建消息存储器
 func DefaultMessageStore() *MessageStore {
-	home, _ := os.UserHomeDir()
-	storeDir := filepath.Join(home, ".agent-bridge", "agents")
-	return NewMessageStore(storeDir)
+	return NewMessageStore(getAgentBridgeStoreDir())
+}
+
+// getAgentBridgeStoreDir 自动检测 Agent-Bridge 数据存储根目录
+// 多优先级检测（优先级从高到低）：
+//
+//	 1. ZLEAP_STORE_DIR 环境变量（用户显式指定，直接使用）
+//	 2. {可执行文件所在目录}/data/agents/（便携模式）
+//	 3. %APPDATA%/agent-bridge/agents/（Windows 标准应用数据目录）
+//	 4. ~/.agent-bridge/agents/（最终 fallback）
+//		5. ./data/agents（所有候选目录均不可写时的兜底路径）
+//
+// Lzm 2026-07-20
+func getAgentBridgeStoreDir() string {
+	// 优先级 1: ZLEAP_STORE_DIR 环境变量（用户显式指定，直接使用）
+	if dir := os.Getenv("ZLEAP_STORE_DIR"); dir != "" {
+		return dir
+	}
+
+	// 优先级 2: 可执行文件所在目录下的 data/agents/（便携模式）
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Join(filepath.Dir(exe), "data", "agents")
+		if isDirWritable(dir) {
+			return dir
+		}
+	}
+
+	// 优先级 3: Windows APPDATA 目录（标准应用数据目录）
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		dir := filepath.Join(appData, "agent-bridge", "agents")
+		if isDirWritable(dir) {
+			return dir
+		}
+	}
+
+	// 优先级 4: 用户家目录（最终 fallback）
+	if home, err := os.UserHomeDir(); err == nil {
+		dir := filepath.Join(home, ".agent-bridge", "agents")
+		if isDirWritable(dir) {
+			return dir
+		}
+	}
+
+	// 所有候选目录均不可写时，返回相对路径作为兜底，不阻断程序运行
+	return filepath.Join(".", "data", "agents")
+}
+
+// GetAgentBridgeStoreDir 返回当前检测到的数据存储目录（导出版本）
+// 可供外部模块在启动时记录日志
+// Lzm 2026-07-20
+func GetAgentBridgeStoreDir() string {
+	return getAgentBridgeStoreDir()
+}
+
+// isDirWritable 检测目录是否可写
+// 尝试创建目录并写入临时文件验证写入权限，最后清理临时文件
+// Lzm 2026-07-20
+func isDirWritable(dir string) bool {
+	// 确保目录存在
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return false
+	}
+
+	// 创建临时文件验证写入权限
+	tmpFile := filepath.Join(dir, ".zleap_write_test")
+	if err := os.WriteFile(tmpFile, []byte("test"), 0o600); err != nil {
+		return false
+	}
+
+	// 清理临时文件
+	_ = os.Remove(tmpFile)
+	return true
 }
 
 // getSessionFile returns the collision-resistant metadata path for a Session.
@@ -324,11 +396,18 @@ func (ms *MessageStore) ListSessions(agentID string, limit int) []SessionSummary
 
 		// 新格式 StoredSession：读取消息文件获取消息数
 		msgCount := ms.countMessages(agentID, item.stored.SessionID)
+		title := item.stored.Title
+		if title == "" {
+			title = ms.firstUserMessage(agentID, item.stored.SessionID)
+		}
 		addSummary(SessionSummary{
-			SessionID:    item.stored.SessionID,
-			MessageCount: msgCount,
-			UpdatedAt:    item.stored.UpdatedAt.Unix(),
-			CreatedAt:    item.stored.CreatedAt.Unix(),
+			SessionID:      item.stored.SessionID,
+			Title:          title,
+			CWD:            item.stored.CWD,
+			PermissionMode: item.stored.PermissionMode,
+			MessageCount:   msgCount,
+			UpdatedAt:      item.stored.UpdatedAt.Unix(),
+			CreatedAt:      item.stored.CreatedAt.Unix(),
 		})
 	}
 	summaries := make([]SessionSummary, 0, len(bySessionID))
@@ -356,6 +435,29 @@ func (ms *MessageStore) ListSessions(agentID string, limit int) []SessionSummary
 // Lzm 2026-07-10
 func (ms *MessageStore) countMessages(agentID, sessionID string) int {
 	return len(ms.LoadMessages(agentID, sessionID))
+}
+
+// firstUserMessage 提取会话中首条用户消息作为标题
+// 取首行、去换行、截断至 50 字
+// Lzm 2026-07-20
+func (ms *MessageStore) firstUserMessage(agentID, sessionID string) string {
+	messages := ms.LoadMessages(agentID, sessionID)
+	for _, msg := range messages {
+		if msg.Role != "user" {
+			continue
+		}
+		text := strings.TrimSpace(msg.Text)
+		// 只取首行
+		if idx := strings.Index(text, "\n"); idx > 0 {
+			text = text[:idx]
+		}
+		text = strings.TrimSpace(text)
+		if len(text) > 50 {
+			text = text[:50] + "..."
+		}
+		return text
+	}
+	return ""
 }
 
 // DeleteSession 删除指定会话文件和消息文件

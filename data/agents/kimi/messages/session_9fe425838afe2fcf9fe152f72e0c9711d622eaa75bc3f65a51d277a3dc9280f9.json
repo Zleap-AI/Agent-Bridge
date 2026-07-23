@@ -1,0 +1,14 @@
+[
+  {
+    "role": "user",
+    "text": "你当前的工作目录是？"
+  },
+  {
+    "role": "thought",
+    "text": "The user is asking about my current working directory in Chinese. Based on the system information provided, the working directory is C:/Users/PC. I should answer directly and concisely in Chinese."
+  },
+  {
+    "role": "assistant",
+    "text": "我当前的工作目录是 `C:/Users/PC`。"
+  }
+]

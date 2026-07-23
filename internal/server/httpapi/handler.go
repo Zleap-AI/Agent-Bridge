@@ -289,7 +289,18 @@ func (h *Handler) listSessions(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) createSession(w http.ResponseWriter, r *http.Request) {
 	deviceID, agentID := r.PathValue("device_id"), r.PathValue("agent_id")
-	id, err := h.caller.CreateSession(r.Context(), deviceID, agentID)
+
+	// 解析可选的 cwd（工作目录）和 permission_mode（授权模式）参数
+	// 请求体为空时视为不传递参数，保持向后兼容
+	var request struct {
+		CWD            string `json:"cwd"`
+		PermissionMode string `json:"permission_mode"`
+	}
+	if r.ContentLength > 0 {
+		_ = json.NewDecoder(r.Body).Decode(&request)
+	}
+
+	id, err := h.caller.CreateSession(r.Context(), deviceID, agentID, request.CWD, request.PermissionMode)
 	if err != nil {
 		writeError(w, err)
 		return

@@ -104,12 +104,23 @@ func (s *Service) Sessions(ctx context.Context, deviceID, agentID string) (json.
 	return s.request(ctx, deviceID, agentID, protocol.ANPMessage{Method: "sessions/list", Params: params})
 }
 
-func (s *Service) CreateSession(ctx context.Context, deviceID, agentID string) (string, error) {
+func (s *Service) CreateSession(ctx context.Context, deviceID, agentID, cwd, permissionMode string) (string, error) {
 	if err := s.requireTarget(ctx, deviceID, agentID); err != nil {
 		return "", err
 	}
 	started := s.now().UTC()
-	message, err := invokeMessage(agentID, "session/new", json.RawMessage(`{}`), false)
+
+	// 构建 session/new 的 innerParams，支持 cwd（工作目录）和 permission_mode（授权模式）
+	innerParams := make(map[string]string)
+	if cwd != "" {
+		innerParams["cwd"] = cwd
+	}
+	if permissionMode != "" {
+		innerParams["permission_mode"] = permissionMode
+	}
+	innerRaw, _ := json.Marshal(innerParams)
+
+	message, err := invokeMessage(agentID, "session/new", innerRaw, false)
 	if err != nil {
 		s.record(context.Background(), deviceID, agentID, "failed", started)
 		return "", err

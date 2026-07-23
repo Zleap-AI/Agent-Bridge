@@ -37,7 +37,7 @@ func TestACPReaderSupportsLargeResponsesAndUpdates(t *testing.T) {
 	}{
 		{
 			name:      "response",
-			message:   ACPMessage{JSONRPC: "2.0", ID: "request-1", Result: content},
+			message:   ACPMessage{JSONRPC: "2.0", ID: MarshalStringID("request-1"), Result: content},
 			wantReply: true,
 		},
 		{

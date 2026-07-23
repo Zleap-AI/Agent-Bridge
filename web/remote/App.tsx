@@ -30,6 +30,7 @@ import {
   EmptyState,
   IconButton,
   LanguageControl,
+  NewSessionDialog,
   Notice,
   Spinner,
   StatusDot,
@@ -173,6 +174,7 @@ export function RemoteApp() {
   const [savingDevice, setSavingDevice] = useState(false);
   const [deviceSettingsError, setDeviceSettingsError] = useState("");
   const [confirmDeleteDevice, setConfirmDeleteDevice] = useState(false);
+  const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false);
   const deviceLoadGeneration = useRef(0);
   const sessionLoadGeneration = useRef(0);
   const messageLoadGeneration = useRef(0);
@@ -364,19 +366,24 @@ export function RemoteApp() {
     return () => controller.abort();
   }, [selectedDeviceId, selectedAgentId, sessionId, selectedDevice?.online, handleApiError]);
 
-  const createSession = async () => {
-    if (!selectedDeviceId || !selectedAgentId) return;
+  const handleCreateSessionClick = () => {
+    if (!selectedDeviceId) return;
+    setNewSessionDialogOpen(true);
+  };
+
+  const handleNewSessionCreate = async (agentId: string, cwd: string, permissionMode: string) => {
+    if (!selectedDeviceId || !agentId) return;
     const deviceId = selectedDeviceId;
-    const agentId = selectedAgentId;
     const contextKey = `${deviceId}\u0000${agentId}`;
     sessionAbortRef.current?.abort();
     const generation = ++sessionLoadGeneration.current;
     setSessionsLoading(true); setWorkspaceError("");
     try {
-      const created = await remoteApi.createSession(deviceId, agentId);
+      const created = await remoteApi.createSession(deviceId, agentId, cwd || undefined, permissionMode);
       if (generation !== sessionLoadGeneration.current || workspaceContextRef.current !== contextKey) return;
       setSessions((current) => [created, ...current.filter((session) => session.id !== created.id)]);
       setSessionId(created.id); setMessages([]);
+      setNewSessionDialogOpen(false);
     } catch (error) {
       if (generation === sessionLoadGeneration.current && workspaceContextRef.current === contextKey && !handleApiError(error)) {
         setWorkspaceError(`${t("session.createFailed")}: ${errorMessage(error)}`);
@@ -586,7 +593,7 @@ export function RemoteApp() {
             sessions={sessions}
             sessionId={sessionId}
             onSelectSession={setSessionId}
-            onCreateSession={createSession}
+            onCreateSession={handleCreateSessionClick}
             onRefreshSessions={() => loadSessions(selectedAgentId, sessionId)}
             sessionsLoading={sessionsLoading}
             messages={messages}
@@ -655,6 +662,14 @@ export function RemoteApp() {
         </div>
       </Drawer>
 
+      <NewSessionDialog
+        open={newSessionDialogOpen}
+        onClose={() => setNewSessionDialogOpen(false)}
+        onCreate={handleNewSessionCreate}
+        agents={agents}
+        defaultAgentId={selectedAgentId}
+        loading={sessionsLoading}
+      />
       <ConfirmDialog open={Boolean(deleteKey)} title={t("remote.revokeKey")} body={t("remote.revokeKeyBody")} confirmLabel={t("common.delete")} danger loading={keysLoading} onCancel={() => setDeleteKey(null)} onConfirm={() => void revokeKey()} />
       <ConfirmDialog open={confirmDeleteDevice} title={t("remote.deleteDeviceTitle")} body={t("remote.deleteDeviceBody")} confirmLabel={t("remote.deleteDevice")} danger loading={savingDevice} onCancel={() => setConfirmDeleteDevice(false)} onConfirm={() => void deleteDevice()} />
     </div>

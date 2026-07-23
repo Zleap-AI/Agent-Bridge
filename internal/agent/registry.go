@@ -31,6 +31,23 @@ const (
 	npmWrapperInstallWaitDelay = 500 * time.Millisecond
 )
 
+// DefaultAgentPriority 定义 Agent 默认优先级（值越小优先级越高）
+// 供 Console 展示和 SaaS 路由决策使用
+// Lzm 2026-07-20
+var DefaultAgentPriority = map[string]int{
+	"claude-code": 10,
+	"opencode":    20,
+	"codex":       30,
+	"hermes":      40,
+	"kimi":        50,
+	"gemini":      60,
+	"copilot":     70,
+	"pi":          80,
+	"cursor":      90,
+	"glm":         100,
+	"openclaw":    110,
+}
+
 // AgentRegistry 管理所有 Agent 实例
 type AgentRegistry struct {
 	agents map[string]Agent
@@ -68,6 +85,7 @@ type AgentDescriptor struct {
 	AgentID     string `json:"agent_id"`
 	DisplayName string `json:"display_name,omitempty"`
 	Status      string `json:"status,omitempty"`
+	Priority    int    `json:"priority,omitempty"`
 }
 
 // ListDescriptors 返回所有 Agent 的描述列表（给远程服务注册用）
@@ -78,6 +96,7 @@ func (r *AgentRegistry) ListDescriptors() []AgentDescriptor {
 			AgentID:     a.ID(),
 			DisplayName: a.DisplayName(),
 			Status:      a.Status().String(),
+			Priority:    a.Priority(),
 		})
 	}
 	return descriptors
@@ -204,26 +223,22 @@ func (r *AgentRegistry) Discover() error {
 		}
 	}
 
-	// 跨平台启动 pi-acp：
+	// 检测和安装 pi-acp：
 	//   Windows: 通过 node 直接运行 JS 文件（绕过 .cmd 脚本的 EPERM 问题）
 	//   macOS/Linux: 直接使用 PATH 中的 pi-acp 命令
-	piCmd := "pi-acp"
-	var piArgs []string
+	//   未找到时尝试自动安装
+	piCmd, piArgs := detectPiCmd(&searchPaths, executionPaths)
 	var piEnv map[string]string
-	if cmd, args := findPiACPCommand(); cmd != "" {
-		piCmd = cmd
-		piArgs = args
-		if runtime.GOOS == "windows" {
-			home := os.Getenv("USERPROFILE")
-			if home == "" {
-				home, _ = os.UserHomeDir()
-			}
-			piEnv = map[string]string{
-				"HOME":         home,
-				"USERPROFILE":  home,
-				"APPDATA":      os.Getenv("APPDATA"),
-				"LOCALAPPDATA": os.Getenv("LOCALAPPDATA"),
-			}
+	if piCmd != "" && runtime.GOOS == "windows" {
+		home := os.Getenv("USERPROFILE")
+		if home == "" {
+			home, _ = os.UserHomeDir()
+		}
+		piEnv = map[string]string{
+			"HOME":         home,
+			"USERPROFILE":  home,
+			"APPDATA":      os.Getenv("APPDATA"),
+			"LOCALAPPDATA": os.Getenv("LOCALAPPDATA"),
 		}
 	}
 
@@ -312,7 +327,7 @@ func (r *AgentRegistry) Discover() error {
 		{
 			id:          "glm",
 			displayName: "GLM Agent",
-			cmd:         "glm-acp-agent",
+			cmd:         detectGlmCmd(&searchPaths, executionPaths),
 			newAgent: func(meta AgentMeta) Agent {
 				return NewGlmAgent(meta)
 			},
@@ -339,6 +354,7 @@ func (r *AgentRegistry) Discover() error {
 		meta := AgentMeta{
 			ID:          c.id,
 			DisplayName: c.displayName,
+			Priority:    DefaultAgentPriority[c.id],
 			Cmd:         fullPath,
 			Args:        c.args,
 			WorkDir:     workDir,
@@ -467,8 +483,8 @@ func findPiACPCommand() (cmd string, args []string) {
 		}
 	}
 
-	// 3. 兜底：返回 pi-acp，让 exec.LookPath 在 Start 时再失败
-	return "pi-acp", nil
+	// 3. 兜底：返回空，由 detectPiCmd 尝试自动安装
+	return "", nil
 }
 
 // resolveEnv 解析特定 Agent 需要的环境变量（平台特有）
@@ -656,6 +672,27 @@ func (r *AgentRegistry) List() []Agent {
 	return result
 }
 
+// GetCapabilities 返回指定 Agent 的能力声明。
+// 若 Agent 不存在则返回错误；能力信息来自 ACP 握手结果。
+// Lzm 2026-07-20
+func (r *AgentRegistry) GetCapabilities(id string) (CapabilityInfo, error) {
+	a := r.agents[id]
+	if a == nil {
+		return CapabilityInfo{}, fmt.Errorf("未知 Agent: %s", id)
+	}
+	return a.Capabilities(), nil
+}
+
+// ListCapabilities 返回所有已注册 Agent 的能力声明 map（key 为 Agent ID）。
+// Lzm 2026-07-20
+func (r *AgentRegistry) ListCapabilities() map[string]CapabilityInfo {
+	result := make(map[string]CapabilityInfo, len(r.agents))
+	for id, a := range r.agents {
+		result[id] = a.Capabilities()
+	}
+	return result
+}
+
 // IDs 返回所有 Agent ID 列表
 func (r *AgentRegistry) IDs() []string {
 	ids := make([]string, 0, len(r.agents))
@@ -664,6 +701,35 @@ func (r *AgentRegistry) IDs() []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// ListByPriority 按优先级升序（值越小优先级越高）返回所有 Agent 列表
+// 优先级相同的 Agent 按 ID 字母序排列
+// Lzm 2026-07-20
+func (r *AgentRegistry) ListByPriority() []Agent {
+	result := make([]Agent, 0, len(r.agents))
+	for _, a := range r.agents {
+		result = append(result, a)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		pi, pj := result[i].Priority(), result[j].Priority()
+		if pi != pj {
+			return pi < pj
+		}
+		return result[i].ID() < result[j].ID()
+	})
+	return result
+}
+
+// GetPriority 返回指定 Agent 的优先级。
+// 若 Agent 不存在则返回 0。
+// Lzm 2026-07-20
+func (r *AgentRegistry) GetPriority(id string) int {
+	a := r.agents[id]
+	if a == nil {
+		return 0
+	}
+	return a.Priority()
 }
 
 // Connect 启动 Agent 并完成 ACP 握手
@@ -923,4 +989,49 @@ func detectClaudeCmd(searchPaths *[]string, executionPaths []string) string {
 	// 4. 安装失败 — 不注册 claude-code（原始 claude 不支持 ACP 协议）
 	slog.Warn("Claude: ACP wrapper 安装失败，跳过注册（原始 claude 命令不支持 ACP 协议）")
 	return ""
+}
+
+// detectGlmCmd 检测 GLM ACP Agent
+// 优先查找 glm-acp-agent，不存在时尝试自动安装
+// Lzm 2026-07-20
+func detectGlmCmd(searchPaths *[]string, executionPaths []string) string {
+	// 1. 优先查找 glm-acp-agent
+	if path := findExecutable("glm-acp-agent", *searchPaths); path != "" {
+		return path
+	}
+
+	// 2. 自动安装 glm-acp-agent
+	slog.Info("GLM: ACP Agent 未安装，尝试自动安装 glm-acp-agent ...")
+	installedPath := autoInstallNPMWrapper("glm-acp-agent", "glm-acp-agent", searchPaths, executionPaths)
+	if installedPath != "" {
+		slog.Info("GLM: ACP Agent 自动安装成功", "path", installedPath)
+		return installedPath
+	}
+
+	// 3. 安装失败 — 不注册 glm
+	slog.Warn("GLM: ACP Agent 安装失败，跳过注册")
+	return ""
+}
+
+// detectPiCmd 检测 pi ACP Agent
+// 优先使用现有 findPiACPCommand 逻辑查找，不存在时尝试自动安装
+// Lzm 2026-07-20
+func detectPiCmd(searchPaths *[]string, executionPaths []string) (cmd string, args []string) {
+	// 1. 使用现有的 findPiACPCommand 逻辑（PATH 查找 + Trae 内置路径回退）
+	cmd, args = findPiACPCommand()
+	if cmd != "" {
+		return cmd, args
+	}
+
+	// 2. 自动安装 pi-acp
+	slog.Info("PI: ACP Agent 未安装，尝试自动安装 pi-acp ...")
+	installedPath := autoInstallNPMWrapper("pi-acp", "pi-acp", searchPaths, executionPaths)
+	if installedPath != "" {
+		slog.Info("PI: ACP Agent 自动安装成功", "path", installedPath)
+		return installedPath, nil
+	}
+
+	// 3. 安装失败 — 跳过注册
+	slog.Warn("PI: ACP Agent 安装失败，跳过注册")
+	return "", nil
 }

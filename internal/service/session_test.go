@@ -83,7 +83,7 @@ func (a *sessionTestAgent) Stream(_ context.Context, _ *protocol.ACPMessage) (<-
 	}
 	return nil, fmt.Errorf("not implemented")
 }
-func (a *sessionTestAgent) NewSession(ctx context.Context) (string, error) {
+func (a *sessionTestAgent) NewSession(ctx context.Context, cwd string) (string, error) {
 	a.mu.Lock()
 	a.newCalls++
 	var sessionID string
@@ -115,11 +115,43 @@ func (a *sessionTestAgent) NewSession(ctx context.Context) (string, error) {
 	}
 	return sessionID, nil
 }
+func (a *sessionTestAgent) Priority() int                 { return 0 }
+func (a *sessionTestAgent) Capabilities() agent.CapabilityInfo { return agent.CapabilityInfo{} }
+func (a *sessionTestAgent) Cancel(_ context.Context, _ string) error {
+	return nil
+}
 func (a *sessionTestAgent) LoadSession(_ context.Context, sessionID string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.loadedSession = sessionID
 	return a.loadErr
+}
+func (a *sessionTestAgent) ResumeSession(_ context.Context, sessionID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.loadedSession = sessionID
+	return a.loadErr
+}
+func (a *sessionTestAgent) CloseSession(_ context.Context, _ string) error {
+	return nil
+}
+func (a *sessionTestAgent) DeleteSession(_ context.Context, _ string) error {
+	return nil
+}
+func (a *sessionTestAgent) Logout(_ context.Context) error {
+	return nil
+}
+func (a *sessionTestAgent) SetMode(_ context.Context, _, _ string) error {
+	return nil
+}
+func (a *sessionTestAgent) GetConfig(_ context.Context, _ string) (interface{}, error) {
+	return nil, nil
+}
+func (a *sessionTestAgent) SetConfig(_ context.Context, _ string, _ map[string]interface{}) error {
+	return nil
+}
+func (a *sessionTestAgent) SetTitle(_ context.Context, _, _ string) error {
+	return nil
 }
 
 func newSessionTestRegistry(a agent.Agent) *agent.AgentRegistry {
@@ -132,11 +164,11 @@ func TestCreateNewSessionAlwaysCreatesANewAgentSession(t *testing.T) {
 	a := &sessionTestAgent{newSessions: []string{"session-1", "session-2"}}
 	sm := newSessionManagerWithStoreDir(newSessionTestRegistry(a), t.TempDir())
 
-	first, err := sm.CreateNewSession(context.Background(), a.ID())
+	first, err := sm.CreateNewSession(context.Background(), a.ID(), "", "")
 	if err != nil {
 		t.Fatalf("first CreateNewSession: %v", err)
 	}
-	second, err := sm.CreateNewSession(context.Background(), a.ID())
+	second, err := sm.CreateNewSession(context.Background(), a.ID(), "", "")
 	if err != nil {
 		t.Fatalf("second CreateNewSession: %v", err)
 	}
@@ -152,7 +184,7 @@ func TestGetOrCreateSessionRestoresMostRecentStoredSession(t *testing.T) {
 	storeDir := t.TempDir()
 	creator := &sessionTestAgent{newSessions: []string{"stored-session"}}
 	firstManager := newSessionManagerWithStoreDir(newSessionTestRegistry(creator), storeDir)
-	if _, err := firstManager.CreateNewSession(context.Background(), creator.ID()); err != nil {
+	if _, err := firstManager.CreateNewSession(context.Background(), creator.ID(), "", ""); err != nil {
 		t.Fatalf("create stored session: %v", err)
 	}
 
@@ -339,7 +371,7 @@ func TestSavingMessagesMovesSessionToMostRecentlyUpdated(t *testing.T) {
 	a := &sessionTestAgent{newSessions: []string{"session-1", "session-2"}}
 	sm := newSessionManagerWithStoreDir(newSessionTestRegistry(a), t.TempDir())
 	for _, sessionID := range []string{"session-1", "session-2"} {
-		if _, err := sm.CreateNewSession(context.Background(), a.ID()); err != nil {
+		if _, err := sm.CreateNewSession(context.Background(), a.ID(), "", ""); err != nil {
 			t.Fatalf("create %s: %v", sessionID, err)
 		}
 	}
@@ -375,7 +407,7 @@ func TestSessionPersistenceKeepsAgentSessionIDInsideStoreDirectory(t *testing.T)
 	a := &sessionTestAgent{newSessions: []string{"../outside/session:1"}}
 	sm := newSessionManagerWithStoreDir(newSessionTestRegistry(a), storeDir)
 
-	sessionID, err := sm.CreateNewSession(context.Background(), a.ID())
+	sessionID, err := sm.CreateNewSession(context.Background(), a.ID(), "", "")
 	if err != nil {
 		t.Fatalf("CreateNewSession: %v", err)
 	}
@@ -399,7 +431,7 @@ func TestSessionAndMessagePersistenceUsesOwnerOnlyPermissions(t *testing.T) {
 	storeDir := t.TempDir()
 	a := &sessionTestAgent{newSessions: []string{"private-session"}}
 	sm := newSessionManagerWithStoreDir(newSessionTestRegistry(a), storeDir)
-	if _, err := sm.CreateNewSession(context.Background(), a.ID()); err != nil {
+	if _, err := sm.CreateNewSession(context.Background(), a.ID(), "", ""); err != nil {
 		t.Fatal(err)
 	}
 	sm.SaveMessages(a.ID(), "private-session", []StoredMessage{{Role: "user", Text: "private"}})

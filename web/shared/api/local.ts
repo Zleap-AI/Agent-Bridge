@@ -1,4 +1,4 @@
-import type { AgentInfo, LocalLogEntry, LocalStatus, MessageInfo, SessionInfo, StreamEvent } from "../types";
+import type { AgentInfo, AgentStorageStats, DiagnosticsInfo, LocalLogEntry, LocalStatus, MessageInfo, PermissionRequestEvent, SessionInfo, StorageInfo, StreamEvent } from "../types";
 import { ApiError, listFrom, requestJSON } from "./http";
 
 type RecordValue = Record<string, unknown>;
@@ -107,6 +107,39 @@ export const localApi = {
     }
   },
 
+  async getStorageInfo(): Promise<StorageInfo> {
+    const raw = await requestJSON<RecordValue>("/api/v1/local/storage");
+    return {
+      store_dir: String(raw.store_dir || ""),
+      agent_count: Number(raw.agent_count || 0),
+      total_sessions: Number(raw.total_sessions || 0),
+      total_messages: Number(raw.total_messages || 0),
+      agents: (raw.agents as unknown as AgentStorageStats[]) || [],
+    };
+  },
+
+  async getDiagnostics(): Promise<DiagnosticsInfo> {
+    const raw = await requestJSON<RecordValue>("/api/v1/local/diagnostics");
+    return {
+      runtime: (raw.runtime as unknown as DiagnosticsInfo["runtime"]) || [],
+      agents: (raw.agents as unknown as DiagnosticsInfo["agents"]) || [],
+      path: (raw.path as unknown as DiagnosticsInfo["path"]) || { count: 0, has_node_modules: false },
+      npm_global_agents: (raw.npm_global_agents as unknown as DiagnosticsInfo["npm_global_agents"]) || [],
+    };
+  },
+
+  async startAgent(id: string): Promise<void> {
+    await requestJSON(`/api/v1/local/agents/${encodeURIComponent(id)}/start`, {
+      method: "POST",
+    });
+  },
+
+  async stopAgent(id: string): Promise<void> {
+    await requestJSON(`/api/v1/local/agents/${encodeURIComponent(id)}/stop`, {
+      method: "POST",
+    });
+  },
+
   async updateSettings(settings: Pick<LocalSettings, "debug" | "claudeSettingsFile">): Promise<LocalSettings> {
     const raw = await requestJSON<RecordValue>("/api/v1/local/settings", {
       method: "PATCH",
@@ -152,6 +185,7 @@ export class LocalAdminClient {
   private connectionListeners = new Set<ConnectionListener>();
   private agentListeners = new Set<AgentListener>();
   private logListeners = new Set<LogListener>();
+  private _onPermissionRequest?: (event: PermissionRequestEvent) => void;
   private sequence = 0;
   private manuallyClosed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -161,6 +195,7 @@ export class LocalAdminClient {
   onConnection(listener: ConnectionListener) { this.connectionListeners.add(listener); return () => this.connectionListeners.delete(listener); }
   onAgents(listener: AgentListener) { this.agentListeners.add(listener); return () => this.agentListeners.delete(listener); }
   onLog(listener: LogListener) { this.logListeners.add(listener); return () => this.logListeners.delete(listener); }
+  onPermissionRequest(cb: (event: PermissionRequestEvent) => void): void { this._onPermissionRequest = cb; }
 
   connect() {
     if (this.socket && this.socket.readyState <= WebSocket.OPEN) return;
@@ -197,16 +232,23 @@ export class LocalAdminClient {
     return listFrom<RecordValue>(raw, "sessions").map((session) => ({
       id: String(session.session_id || session.sessionId || session.id || ""),
       agentId: String(session.agent_id || agentId),
+      title: String(session.title || ""),
+      cwd: String(session.cwd || "") || undefined,
+      permission_mode: (session.permission_mode || session.permissionMode) as SessionInfo["permission_mode"],
       messageCount: Number(session.message_count || 0),
+      createdAt: (session.created_at || session.createdAt) as string | number | undefined,
       updatedAt: (session.updated_at || session.updatedAt) as string | number | undefined,
     })).filter((session) => session.id);
   }
 
-  async createSession(agentId: string): Promise<string> {
-    const raw = await this.request("invoke", { agent_id: agentId, method: "session/new", params: {} }) as RecordValue;
+  async createSession(agentId: string, cwd?: string, permissionMode?: string): Promise<{ sessionId: string }> {
+    const params: Record<string, unknown> = {};
+    if (cwd) { params.cwd = cwd; }
+    if (permissionMode) { params.permission_mode = permissionMode; }
+    const raw = await this.request("invoke", { agent_id: agentId, method: "session/new", params }) as RecordValue;
     const id = String(raw.sessionId || raw.session_id || raw.id || "");
     if (!id) throw new ApiError("The server did not return a Session ID", 0, "INVALID_RESPONSE");
-    return id;
+    return { sessionId: id };
   }
 
   async getMessages(agentId: string, sessionId: string): Promise<MessageInfo[]> {
@@ -258,12 +300,14 @@ export class LocalAdminClient {
     });
   }
 
-  private request(method: string, params: RecordValue = {}): Promise<unknown> {
+  request(method: string, params: RecordValue = {}): Promise<unknown> {
     if (!this.connected || !this.socket) return Promise.reject(new ApiError("Local service is offline", 0, "CONNECTION_CLOSED"));
     const id = this.id(method.replace(/\W/g, "_"));
+    console.debug(`[WS_DEBUG] 发送请求: method=${method}, id=${id}, params=`, JSON.stringify(params).slice(0, 200));
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
+        console.warn(`[WS_DEBUG] 请求超时: id=${id}, method=${method}`);
         reject(new ApiError("Local request timed out", 0, "TIMEOUT"));
       }, 30_000);
       this.pending.set(id, { resolve, reject, timeout });
@@ -274,6 +318,11 @@ export class LocalAdminClient {
   private handleMessage(raw: unknown) {
     let message: RPCResponse;
     try { message = JSON.parse(String(raw)) as RPCResponse; } catch { this.emitLog("warn", "Ignored an invalid local response"); return; }
+    // 调试日志：记录所有收到的 WebSocket 消息，帮助追踪权限响应等流程
+    // Lzm 2026-07-21
+    console.debug(`[WS_DEBUG] 收到消息: method=${message.method ?? "''"}, id=${message.id ?? "''"}, error=${message.error ? message.error.message : "''"}`,
+      "result=", message.result ? JSON.stringify(message.result).slice(0, 100) : "''",
+    );
     if (message.method === "bridge/list") {
       const bridges = listFrom<RecordValue>(message.params, "bridges");
       const agents = bridges.flatMap((bridge) => listFrom<RecordValue>(bridge.agents, "agents"));
@@ -300,20 +349,82 @@ export class LocalAdminClient {
     }
 
     const pending = this.pending.get(message.id);
-    if (!pending) return;
+    if (!pending) {
+      console.debug(`[WS_DEBUG] 无匹配的 pending 请求: id=${message.id}, pending_keys=[${Array.from(this.pending.keys()).join(",")}]`);
+      return;
+    }
     clearTimeout(pending.timeout);
     this.pending.delete(message.id);
+    console.debug(`[WS_DEBUG] 请求完成: id=${message.id}, error=${!!message.error}`);
     if (message.error) pending.reject(new ApiError(message.error.message || "Local request failed", 0, String(message.error.code || "AGENT_ERROR")));
     else pending.resolve(message.result);
   }
 
+  // handleStreamUpdate 处理 session/update 流式更新事件。
+  // 支持普通流式事件以及 permission_request / auto_approve 权限事件。
+  // 权限事件没有关联的 stream ID，需要优先处理。
+  // 兼容后端 NewStreamUpdate 的 {"text": "<json>"} 嵌套格式。
+  // Lzm 2026-07-21
   private handleStreamUpdate(params: RecordValue) {
-    const id = String(params.request_id || params.requestId || "");
-    const stream = this.streams.get(id);
-    if (!stream) return;
     const kind = String(params.type || "");
     const content = (params.content || {}) as RecordValue;
     const text = String(content.text ?? (typeof params.content === "string" ? params.content : ""));
+
+    // 权限请求事件没有关联的 stream，需要优先处理
+    // permission_request — 用户需要手动授权，触发弹窗回调
+    // auto_approve — 后端自动批准，无需前端弹窗，否则会引起竞态
+    //   （auto_approve 不注册 pending 通道，弹窗打开后用户点击会报错）
+    // Lzm 2026-07-21
+    if (kind === "permission_request") {
+      try {
+        const rawContent = params.content;
+        let event: PermissionRequestEvent;
+        console.debug(`[WS_DEBUG] 处理 permission_request, rawContent 类型: ${typeof rawContent}, rawContent=`, rawContent);
+        if (typeof rawContent === "string") {
+          // 直接解析 JSON 字符串
+          event = JSON.parse(rawContent) as PermissionRequestEvent;
+          console.debug(`[WS_DEBUG] permission_request 从 string 解析: session_id=${event.session_id?.slice(0, 16)}`);
+        } else if (rawContent && typeof (rawContent as RecordValue).text === "string") {
+          // 兼容 NewStreamUpdate 的 {"text": "<json>"} 嵌套格式
+          const innerText = (rawContent as RecordValue).text as string;
+          console.debug(`[WS_DEBUG] permission_request 从 text 字段解析: text=${innerText.slice(0, 200)}`);
+          const parsed = JSON.parse(innerText) as PermissionRequestEvent;
+          event = parsed;
+        } else {
+          // 直接使用对象（字段名可能为 session_id 或 sessionId）
+          event = rawContent as unknown as PermissionRequestEvent;
+          console.debug(`[WS_DEBUG] permission_request 直接使用对象:`, JSON.stringify(event).slice(0, 200));
+        }
+        // 兼容 event 中字段名为 sessionId 的情况
+        if (!event.session_id && (event as unknown as RecordValue).sessionId) {
+          (event as unknown as RecordValue).session_id = (event as unknown as RecordValue).sessionId;
+          console.debug(`[WS_DEBUG] permission_request 兼容 sessionId -> session_id`);
+        }
+        if (!event.agent_id && (event as unknown as RecordValue).agentId) {
+          (event as unknown as RecordValue).agent_id = (event as unknown as RecordValue).agentId;
+        }
+        if (!event.session_cwd && (event as unknown as RecordValue).cwd) {
+          (event as unknown as RecordValue).session_cwd = (event as unknown as RecordValue).cwd;
+        }
+        console.debug(`[WS_DEBUG] permission_request 最终事件: session_id=${event.session_id?.slice(0, 16)}, agent_id=${event.agent_id}, has_onPermissionRequest=${!!this._onPermissionRequest}`);
+        this.emitLog("info", `收到权限请求事件: ${kind}, session=${event.session_id?.slice(0, 16) || "?"}`);
+        this._onPermissionRequest?.(event);
+      } catch (e) {
+        console.error(`[WS_DEBUG] 解析权限请求事件失败: ${e}`);
+        this.emitLog("error", `解析权限请求事件失败: ${e}`);
+      }
+      return;
+    }
+
+    // auto_approve 事件：后端已自动批准，不触发前端弹窗，仅记录日志
+    if (kind === "auto_approve") {
+      this.emitLog("info", `auto_approve: 权限已自动批准, session 已隐去`);
+      return;
+    }
+
+    const id = String(params.request_id || params.requestId || "");
+    const stream = this.streams.get(id);
+    if (!stream) return;
     if (kind === "response" || kind === "message.delta") stream.onEvent({ type: "message.delta", text });
     else if (kind === "thought" || kind === "reasoning.delta") stream.onEvent({ type: "reasoning.delta", text });
     else if (kind === "session_refreshed" || kind === "session.updated") stream.onEvent({ type: "session.updated", sessionId: text || String(content.session_id || "") });

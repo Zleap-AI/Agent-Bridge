@@ -1,0 +1,6 @@
+[
+  {
+    "role": "user",
+    "text": "在 D:/project/A 目录下创建一个 test.txt 文件，文件内容写 'hello world from codex'"
+  }
+]

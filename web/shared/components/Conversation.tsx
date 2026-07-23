@@ -1,7 +1,6 @@
-import { Bot, ChevronDown, FolderOpen, MessageSquare, Plus, RefreshCw, Send } from "lucide-react";
+import { Bot, ChevronDown, Folder, FolderOpen, MessageSquare, Plus, RefreshCw, Send } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { AgentInfo, MessageInfo, SessionInfo } from "../types";
-import { truncateMiddle } from "../format";
 import { useI18n } from "../i18n";
 import { Button, EmptyState, IconButton, MobileMenuButton, Spinner, StatusDot } from "./ui";
 
@@ -120,18 +119,36 @@ export function Conversation({
         </div>
         <div className="workspace__controls">
           {agentControl}
-          <div className="session-control">
+          <div className="session-control" title={sessionId ? `Session: ${sessionId}` : undefined}>
             <select
               value={sessionId}
               onChange={(event) => onSelectSession(event.target.value)}
               disabled={!agent || !enabled || sessionsLoading || messagesLoading || sending}
               aria-label={t("session.title")}
             >
-              <option value="">{sessionsLoading ? t("common.loading") : sessions.length ? t("session.select") : t("session.empty")}</option>
-              {sessions.map((session) => <option key={session.id} value={session.id}>{truncateMiddle(session.id, 24)}</option>)}
+              <option value="">
+                {sessionsLoading
+                  ? t("common.loading")
+                  : sessions.length
+                    ? t("session.select")
+                    : t("session.empty")}
+              </option>
+              {sessions.map((session) => (
+                <option key={session.id} value={session.id}>
+                  {session.title
+                    ? `${session.title.length > 28 ? session.title.slice(0, 28) + "…" : session.title}  |  ${session.id.slice(0, 10)}`
+                    : session.id.slice(0, 12)}
+                  {session.messageCount != null ? ` (${session.messageCount})` : ""}
+                </option>
+              ))}
             </select>
             <ChevronDown size={15} aria-hidden="true" />
           </div>
+          {sessions.find(s => s.id === sessionId)?.cwd && (
+            <span className="session-cwd-badge" title="会话工作目录">
+              <Folder size={14} /> {sessions.find(s => s.id === sessionId)!.cwd}
+            </span>
+          )}
           <IconButton icon={RefreshCw} label={t("common.refresh")} onClick={() => void onRefreshSessions()} disabled={!agent || !enabled || sessionsLoading || messagesLoading || sending} />
           {onLoadSession ? <IconButton icon={FolderOpen} label={t("session.loadExisting")} onClick={onLoadSession} disabled={!agent || !enabled || sessionsLoading || messagesLoading || sending} /> : null}
           <Button

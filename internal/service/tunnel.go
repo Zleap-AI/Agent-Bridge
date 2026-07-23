@@ -85,13 +85,16 @@ func NewTunnelServiceWithSessionManager(registry *agent.AgentRegistry, cfg Tunne
 	if sessions == nil {
 		sessions = NewSessionManager(registry)
 	}
+	router := NewRequestRouter(registry)
+	router.SetupPermissionCallbacks(sessions)
+	router.SetupElicitationCallbacks()
 	service := &TunnelService{
 		registry: registry,
 		cfg:      cfg,
 		ctx:      ctx,
 		cancel:   cancel,
 		sessions: sessions,
-		router:   NewRequestRouter(registry),
+		router:   router,
 	}
 	service.router.SetStreamCallback(func(requestID, chunkType, text string) error {
 		return service.sendJSON(protocol.NewStreamUpdate(requestID, chunkType, text))

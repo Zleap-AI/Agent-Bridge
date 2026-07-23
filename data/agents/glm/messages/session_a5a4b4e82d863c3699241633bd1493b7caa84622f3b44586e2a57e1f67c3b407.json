@@ -1,0 +1,10 @@
+[
+  {
+    "role": "user",
+    "text": "你好"
+  },
+  {
+    "role": "assistant",
+    "text": "\n\n[error] No API key found. Set the Z_AI_API_KEY environment variable, or run `glm-acp-agent --setup` to store one."
+  }
+]

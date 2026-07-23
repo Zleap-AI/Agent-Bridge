@@ -1,0 +1,26 @@
+[
+  {
+    "role": "user",
+    "text": "Say hello in one sentence."
+  },
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_opencode_allow.txt\" with content \"allow test from opencode\". Reply \"ok\" when done."
+  },
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_opencode_auto.txt\" with content \"auto approve test from opencode\". Reply \"ok\"."
+  },
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_opencode_auto2.txt\" with content \"auto followup test\". Reply \"ok\"."
+  },
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_opencode_deny.txt\" with content \"deny test\". Reply \"ok\"."
+  },
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_opencode_ops.txt\" with content \"Hello from opencode\"."
+  }
+]

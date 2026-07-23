@@ -25,15 +25,14 @@ import (
 
 // ProcessManager 管理单个子进程的生命周期
 type ProcessManager struct {
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    io.ReadCloser
-	stderr    io.ReadCloser
-	cancel    context.CancelFunc
-	done      chan struct{}
-	waitErr   error // cmd.Wait 的返回结果
-	mu        sync.Mutex
-	startedAt time.Time
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	stdout  io.ReadCloser
+	stderr  io.ReadCloser
+	cancel  context.CancelFunc
+	done    chan struct{}
+	waitErr error // cmd.Wait 的返回结果
+	mu      sync.Mutex
 }
 
 // processTree owns the platform-specific boundary used to terminate every
@@ -51,6 +50,13 @@ type StartProcessConfig struct {
 	WorkDir  string            // 工作目录
 	Env      map[string]string // 额外环境变量
 	PathDirs []string          // 在父进程 PATH 之外补充的可执行文件目录
+
+	// UseProcessTree 是否启用进程树管理（Windows Job Object）
+	// 部分 Agent（如 Codex）在 Job Object 包装下无法正常初始化，
+	// 此时应设置为 false 使用普通进程启动。
+	// Windows 默认 true；非 Windows 平台忽略此选项。
+	// Lzm 2026-07-22
+	UseProcessTree bool
 }
 
 // StartProcess 启动一个新子进程
@@ -59,10 +65,19 @@ func StartProcess(ctx context.Context, cfg StartProcessConfig) (*ProcessManager,
 	ctx, cancel := context.WithCancel(ctx)
 
 	cmd := CommandContext(ctx, cfg.Command, cfg.Args...)
-	tree, err := configureProcessTree(cmd)
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("配置进程树边界失败: %w", err)
+	// 默认启用进程树管理（Windows 上创建 Job Object）
+	useTree := true
+	if !cfg.UseProcessTree {
+		useTree = false
+	}
+	var tree processTree
+	if useTree {
+		var err error
+		tree, err = configureProcessTree(cmd)
+		if err != nil {
+			cancel()
+			return nil, fmt.Errorf("配置进程树边界失败: %w", err)
+		}
 	}
 	cmd.Dir = cfg.WorkDir
 
@@ -86,34 +101,39 @@ func StartProcess(ctx context.Context, cfg StartProcessConfig) (*ProcessManager,
 	}
 
 	pm := &ProcessManager{
-		cmd:       cmd,
-		stdin:     stdin,
-		stdout:    stdout,
-		stderr:    stderr,
-		cancel:    cancel,
-		done:      make(chan struct{}),
-		startedAt: time.Now(),
+		cmd:    cmd,
+		stdin:  stdin,
+		stdout: stdout,
+		stderr: stderr,
+		cancel: cancel,
+		done:   make(chan struct{}),
 	}
 
 	if err := cmd.Start(); err != nil {
-		_ = tree.terminate()
+		if tree != nil {
+			_ = tree.terminate()
+		}
 		cancel()
 		return nil, fmt.Errorf("启动进程 %s 失败: %w", cfg.Command, err)
 	}
-	if err := tree.attach(cmd); err != nil {
-		_ = tree.terminate()
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		cancel()
-		return nil, fmt.Errorf("建立进程树边界失败: %w", err)
+	if tree != nil {
+		if err := tree.attach(cmd); err != nil {
+			_ = tree.terminate()
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			cancel()
+			return nil, fmt.Errorf("建立进程树边界失败: %w", err)
+		}
 	}
 
 	// 清理必须紧邻 Wait 且只执行一次。否则自然退出的父进程会遗留子进程，
 	// 而很晚才调用 Stop 又可能把已经复用的 PID/进程组误认为旧 Agent。
 	go func() {
 		waitErr := cmd.Wait()
-		if cleanupErr := tree.terminate(); cleanupErr != nil {
-			waitErr = errors.Join(waitErr, fmt.Errorf("清理 Agent 子进程树失败: %w", cleanupErr))
+		if tree != nil {
+			if cleanupErr := tree.terminate(); cleanupErr != nil {
+				waitErr = errors.Join(waitErr, fmt.Errorf("清理 Agent 子进程树失败: %w", cleanupErr))
+			}
 		}
 		pm.waitErr = waitErr
 		close(pm.done)
@@ -253,11 +273,6 @@ func (pm *ProcessManager) IsRunning() bool {
 	default:
 		return true
 	}
-}
-
-// Uptime 返回进程已运行时间
-func (pm *ProcessManager) Uptime() time.Duration {
-	return time.Since(pm.startedAt)
 }
 
 // Stop 终止进程

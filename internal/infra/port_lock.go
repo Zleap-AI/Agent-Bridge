@@ -13,11 +13,6 @@ import (
 	"time"
 )
 
-// EnsurePort preserves the legacy API while checking all local interfaces.
-func EnsurePort(port int) error {
-	return EnsureAddress("", port)
-}
-
 // EnsureAddress verifies that the Local HTTP address is available. An existing
 // listener is replaced only when its executable is positively identified as
 // Agent-Bridge Local; unrelated processes are never terminated.

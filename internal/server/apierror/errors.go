@@ -3,6 +3,8 @@ package apierror
 import (
 	"errors"
 	"fmt"
+
+	"github.com/Zleap-AI/Agent-Bridge/internal/agent"
 )
 
 const (
@@ -59,4 +61,25 @@ func As(err error) *Error {
 		return apiErr
 	}
 	return Wrap(CodeInternal, "Internal server error", 500, err)
+}
+
+// AgentErrorToHTTPStatus 将 Agent 错误码映射到 HTTP 状态码
+// Lzm 2026-07-20
+func AgentErrorToHTTPStatus(code agent.AgentErrorCode) int {
+	switch code {
+	case agent.ErrCodeStartFailed, agent.ErrCodeProcessExited, agent.ErrCodeHandshakeFailed:
+		return 503
+	case agent.ErrCodeAuthFailed:
+		return 401
+	case agent.ErrCodeTimeout:
+		return 504
+	case agent.ErrCodeEPERM:
+		return 500
+	case agent.ErrCodeNotReady:
+		return 409
+	case agent.ErrCodeSessionNotFound:
+		return 404
+	default:
+		return 500
+	}
 }

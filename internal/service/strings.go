@@ -6,6 +6,16 @@ import (
 	"strings"
 )
 
+// safeSessionID 安全截取会话 ID 前 16 位用于日志显示
+// 与 agent.truncateSessionID 功能相同，避免循环依赖
+// Lzm 2026-07-22
+func safeSessionID(id string) string {
+	if len(id) > 16 {
+		return id[:16] + "..."
+	}
+	return id
+}
+
 func truncateString(value string, limit int) string {
 	if limit <= 0 || len(value) <= limit {
 		return value

@@ -1,0 +1,117 @@
+/* ============================================================
+ * Local Console Specific Styles
+ *
+ * @author Lzm
+ * @date 2026-07-21
+ * @encoding UTF-8
+ * @lang CSS
+ * ============================================================ */
+
+/* ─── Toast 容器 ───────────────────────────────────────────── */
+.toast-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+  max-width: 380px;
+}
+
+/* ─── Toast 卡片 ───────────────────────────────────────────── */
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--gray-200);
+  border-radius: 8px;
+  color: var(--gray-800);
+  background: #fff;
+  font-size: 13px;
+  line-height: 1.5;
+  pointer-events: auto;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.10);
+  animation: toast-fade-in 0.2s ease-out;
+}
+
+.toast--success {
+  border-color: #b9dfd1;
+  background: var(--green-bg);
+  color: #0d6645;
+}
+
+.toast--error {
+  border-color: #efc5c5;
+  background: var(--red-bg);
+  color: #9f2929;
+}
+
+.toast--info {
+  border-color: var(--gray-200);
+  background: var(--gray-50);
+  color: var(--gray-800);
+}
+
+.toast--warning {
+  border-color: #f0d694;
+  background: var(--amber-bg);
+  color: #744d00;
+}
+
+/* ─── Toast 内部元素 ───────────────────────────────────────── */
+.toast__icon {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  margin-top: 1px;
+}
+
+.toast__message {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.toast__close {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  opacity: 0.6;
+  background: transparent;
+  cursor: pointer;
+  transition: opacity 0.12s, background 0.12s;
+}
+
+.toast__close:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.06);
+}
+
+/* ─── 动画 ─────────────────────────────────────────────────── */
+@keyframes toast-fade-in {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    animation: none;
+  }
+}

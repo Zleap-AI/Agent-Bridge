@@ -1,0 +1,26 @@
+[
+  {
+    "role": "user",
+    "text": "Say hello in one sentence."
+  },
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_kimi_allow.txt\" with content \"allow test from kimi\". Reply \"ok\" when done."
+  },
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_kimi_auto.txt\" with content \"auto approve test from kimi\". Reply \"ok\"."
+  },
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_kimi_auto2.txt\" with content \"auto followup test\". Reply \"ok\"."
+  },
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_kimi_deny.txt\" with content \"deny test\". Reply \"ok\"."
+  },
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_kimi_ops.txt\" with content \"Hello from kimi\"."
+  }
+]

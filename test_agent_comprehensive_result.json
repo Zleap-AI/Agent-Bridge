@@ -1,0 +1,155 @@
+{
+  "timestamp": "2026-07-22 18:10:17",
+  "cli_availability": {
+    "claude-code": {
+      "available": true,
+      "version": "2.1.217 (Claude Code)"
+    },
+    "opencode": {
+      "available": true,
+      "version": "1.18.4"
+    },
+    "codex": {
+      "available": false,
+      "reason": "无 CLI 命令"
+    },
+    "hermes": {
+      "available": true,
+      "version": "Hermes Agent v0.18.2 (2026.7.7.2)\r\nProject: C:\\Users\\PC\\AppData\\Local\\Python\\pythoncore-3.12-64\\Lib\\"
+    },
+    "kimi": {
+      "available": true,
+      "version": "0.21.1"
+    },
+    "gemini": {
+      "available": false,
+      "reason": "code=1: 'gemini' is not recognized as an internal or external command,\r\noperable program"
+    },
+    "copilot": {
+      "available": false,
+      "reason": "code=1: 'copilot' is not recognized as an internal or external command,\r\noperable progra"
+    },
+    "pi": {
+      "available": true,
+      "version": "0.80.6"
+    },
+    "cursor": {
+      "available": false,
+      "reason": "code=1: 'cursor' is not recognized as an internal or external command,\r\noperable program"
+    },
+    "glm": {
+      "available": false,
+      "reason": "code=1: 'glm' is not recognized as an internal or external command,\r\noperable program or"
+    },
+    "openclaw": {
+      "available": true,
+      "version": "OpenClaw 2026.7.1 (2d2ddc4)"
+    }
+  },
+  "cli_acp_support": {
+    "claude-code": {
+      "acp_supported": true
+    },
+    "opencode": {
+      "acp_supported": true
+    },
+    "codex": {
+      "acp_supported": false
+    },
+    "hermes": {
+      "acp_supported": true
+    },
+    "kimi": {
+      "acp_supported": true
+    },
+    "gemini": {
+      "acp_supported": false
+    },
+    "copilot": {
+      "acp_supported": false
+    },
+    "pi": {
+      "acp_supported": true
+    },
+    "cursor": {
+      "acp_supported": false
+    },
+    "glm": {
+      "acp_supported": false
+    },
+    "openclaw": {
+      "acp_supported": true
+    }
+  },
+  "cli_session_list": {
+    "opencode": {
+      "success": true,
+      "output": ""
+    },
+    "claude-code": {
+      "success": true,
+      "output": "[]"
+    },
+    "openclaw": {
+      "success": true,
+      "output": "Session store: C:\\Users\\PC\\.openclaw\\agents\\main\\sessions\\sessions.json\nSessions listed: 2\nKind        Key                        Age       Model          Runtime            Tokens (ctx %)       Flags\ndirect      agent:main:acp-b...574e17  8d ago    deepseek-chat  OpenClaw Default   13k/64k (21%)        system id:81efae6a-721f-4abf-b5a9-a7a5d0876380\ndirect      agent:main:acp-b...236699  8d ago    deepseek-chat  OpenClaw Default   13k/64k (21%)        system id:9c1bd08d-ea6a-4228-bf87-4e5809cecd"
+    },
+    "hermes": {
+      "success": true,
+      "output": "usage: hermes sessions [-h]\r\n                       {list,export,delete,prune,archive,optimize,repair,stats,rename,browse}\r\n                       ...\r\n\r\nView and manage the SQLite session store\r\n\r\npositional arguments:\r\n  {list,export,delete,prune,archive,optimize,repair,stats,rename,browse}\r\n    list                List recent sessions\r\n    export              Export sessions to JSONL, Markdown, or QMD\r\n    delete              Delete a specific session\r\n    prune               Delete old sessi"
+    }
+  },
+  "acp_results": {},
+  "native_storage": {
+    "codex": {
+      "dir_exists": true,
+      "session_index_exists": true,
+      "session_file_count": 7
+    },
+    "kimi": {
+      "dir_exists": true,
+      "session_index_exists": true,
+      "session_file_count": 27
+    },
+    "claude-code": {
+      "dir_exists": true,
+      "session_index_exists": false,
+      "session_file_count": 0
+    },
+    "opencode": {
+      "dir_exists": true,
+      "session_index_exists": false,
+      "session_file_count": 0
+    },
+    "pi": {
+      "dir_exists": true,
+      "session_index_exists": false,
+      "session_file_count": 0
+    },
+    "gemini": {
+      "dir_exists": false,
+      "session_index_exists": false,
+      "session_file_count": 0
+    },
+    "copilot": {
+      "dir_exists": false,
+      "session_index_exists": false,
+      "session_file_count": 0
+    },
+    "cursor": {
+      "dir_exists": false,
+      "session_index_exists": false,
+      "session_file_count": 0
+    },
+    "glm": {
+      "dir_exists": false,
+      "session_index_exists": false,
+      "session_file_count": 0
+    },
+    "openclaw": {
+      "dir_exists": true,
+      "session_index_exists": false,
+      "session_file_count": 0
+    }
+  }
+}

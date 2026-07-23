@@ -1,34 +1,57 @@
+/**
+ * Agent-Bridge Local Console 入口组件
+ *
+ * 使用子组件和 hooks 整合 Agent 管理、会话管理、消息管理、权限管理和 Toast 通知。
+ *
+ * @file App.tsx
+ * @author Lzm
+ * @date 2026-07-21
+ *
+ * @encoding UTF-8
+ * @lang TypeScript 5.x / React 19.x (JSX)
+ */
+
 import {
-  Bot,
   Cable,
+  Check,
   CircleAlert,
-  Network,
+  LoaderCircle,
+  Minus,
   RefreshCw,
   ScrollText,
-  Settings,
   Unplug,
+  X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { LocalAdminClient, localApi, type LocalSettings } from "../shared/api/local";
-import { ApiError } from "../shared/api/http";
 import { Conversation } from "../shared/components/Conversation";
 import {
   Button,
   ConfirmDialog,
   Drawer,
   EmptyState,
-  IconButton,
   LanguageControl,
+  NewSessionDialog,
   Notice,
   Spinner,
-  StatusDot,
-  useMobileSidebar,
 } from "../shared/components/ui";
 import { formatDate, truncateMiddle } from "../shared/format";
 import { useI18n } from "../shared/i18n";
-import type { AgentInfo, LocalLogEntry, LocalStatus, MessageInfo, SessionInfo, StreamEvent } from "../shared/types";
+import type {
+  DiagnosticsInfo,
+  LocalLogEntry,
+  LocalStatus,
+  StorageInfo,
+} from "../shared/types";
+import { useToastContext } from "./hooks/useToast";
+import { usePermission } from "./hooks/usePermission";
+import { useMessages } from "./hooks/useMessages";
+import { useSessions } from "./hooks/useSessions";
+import { useAgents } from "./hooks/useAgents";
+import { AgentSidebar } from "./components/AgentSidebar";
+import { PermissionDialog } from "./components/PermissionDialog";
 
-type DrawerName = "remote" | "logs" | "settings" | "session" | null;
+/* ─── 常量 ─────────────────────────────────────────────────── */
 
 const initialStatus: LocalStatus = {
   version: "0.4.0",
@@ -38,36 +61,50 @@ const initialStatus: LocalStatus = {
   remote: { paired: false, connected: false, serverUrl: "" },
 };
 
+type DrawerName = "remote" | "logs" | "settings" | "diagnostics" | "session" | null;
+
+/* ─── 辅助 ─────────────────────────────────────────────────── */
+
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
 }
 
-function connectionStatus(status: AgentInfo["status"]): "online" | "busy" | "offline" | "error" {
-  if (status === "idle") return "online";
-  if (status === "busy") return "busy";
-  if (status === "error") return "error";
-  return "offline";
-}
+/* ─── 组件 ─────────────────────────────────────────────────── */
 
 export function LocalApp() {
   const { t, locale } = useI18n();
   const client = useMemo(() => new LocalAdminClient(), []);
+
+  // Hooks
+  const {
+    agents,
+    activeAgentId,
+    setActiveAgent,
+    activeAgent,
+    pendingActions,
+    refresh: refreshAgents,
+    startAgent,
+    stopAgent,
+  } = useAgents(client);
+
+  const sessionsHook = useSessions(client, activeAgentId);
+  const { sessions, sessionId, create: createSession, loadExisting: loadSession, loading: sessionsLoading } = sessionsHook;
+
+  const messagesHook = useMessages(client, {
+    onSessionUpdate: (sid, aid) => { void sessionsHook.refresh(aid); },
+  });
+  const { messages, loading: messagesLoading, sending } = messagesHook;
+
+  const permissionHook = usePermission(client);
+  const { toast } = useToastContext();
+
+  // ── 本地状态 ──────────────────────────────────────────────────────────
+
   const [initializing, setInitializing] = useState(true);
   const [status, setStatus] = useState<LocalStatus>(initialStatus);
-  const [agents, setAgents] = useState<AgentInfo[]>([]);
-  const [selectedAgentId, setSelectedAgentId] = useState("");
-  const [sessions, setSessions] = useState<SessionInfo[]>([]);
-  const [sessionId, setSessionId] = useState("");
-  const [messages, setMessages] = useState<MessageInfo[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
-  const [sessionsLoading, setSessionsLoading] = useState(false);
-  const [existingSessionId, setExistingSessionId] = useState("");
-  const [existingSessionLoading, setExistingSessionLoading] = useState(false);
-  const [existingSessionError, setExistingSessionError] = useState("");
-  const [messagesLoading, setMessagesLoading] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [drawer, setDrawer] = useState<DrawerName>(null);
   const [mobileMenu, setMobileMenu] = useState(false);
+  const [drawer, setDrawer] = useState<DrawerName>(null);
   const [logs, setLogs] = useState<LocalLogEntry[]>([]);
   const [serverUrl, setServerUrl] = useState("");
   const [pairingCode, setPairingCode] = useState("");
@@ -77,387 +114,280 @@ export function LocalApp() {
   const [confirmReplace, setConfirmReplace] = useState(false);
   const [confirmUnpair, setConfirmUnpair] = useState(false);
   const [unpairing, setUnpairing] = useState(false);
-  const [workspaceError, setWorkspaceError] = useState("");
-  const [statusError, setStatusError] = useState("");
-  const [localSettings, setLocalSettings] = useState<LocalSettings>({ debug: false, claudeSettingsFile: "", restartRequired: false });
+  const [settings, setSettings] = useState<LocalSettings>({ debug: false, claudeSettingsFile: "", restartRequired: false });
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsError, setSettingsError] = useState("");
-  const sessionLoadGeneration = useRef(0);
-  const messageLoadGeneration = useRef(0);
-  const streamGeneration = useRef(0);
-  const selectedAgentIdRef = useRef("");
-  const sessionIdRef = useRef("");
-  const skipMessageLoadForSession = useRef("");
-  const closeMobileMenu = useCallback(() => setMobileMenu(false), []);
-  const mobileSidebarRef = useMobileSidebar(mobileMenu, closeMobileMenu);
+  const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsInfo | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [diagnosticsError, setDiagnosticsError] = useState("");
+  const [existingSessionId, setExistingSessionId] = useState("");
+  const [existingSessionLoading, setExistingSessionLoading] = useState(false);
+  const [existingSessionError, setExistingSessionError] = useState("");
+  const [newSessionDialogOpen, setNewSessionDialogOpen] = useState(false);
+  const [insecure, setInsecure] = useState(false);
 
-  selectedAgentIdRef.current = selectedAgentId;
-
-  const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) || null;
-
-  const refreshStatus = useCallback(async () => {
-    try {
-      const next = await localApi.getStatus();
-      setStatusError("");
-      setStatus(next);
-      setAgents(next.agents);
-      setSelectedAgentId((current) => next.agents.some((agent) => agent.id === current) ? current : next.agents[0]?.id || "");
-      if (next.remote.serverUrl) setServerUrl((current) => current || next.remote.serverUrl);
-      return true;
-    } catch (error) {
-      setStatus((current) => ({ ...current, healthy: false }));
-      setStatusError(errorMessage(error));
-      return false;
-    }
-  }, []);
+  // ── 副作用：客户端连接 ────────────────────────────────────────────────
 
   useEffect(() => {
-    const offConnection = client.onConnection(setWsConnected);
-    const offAgents = client.onAgents((next) => {
-      setAgents(next);
-      setSelectedAgentId((current) => next.some((agent) => agent.id === current) ? current : next[0]?.id || "");
+    const offConnection = client.onConnection((connected) => {
+      setWsConnected(connected);
     });
-    const offLog = client.onLog((level, message) => setLogs((current) => [
-      ...current.slice(-199),
-      { timestamp: new Date().toISOString(), level, message },
-    ]));
+    const offLog = client.onLog((level, message) => {
+      setLogs((prev) => [...prev.slice(-199), { timestamp: new Date().toISOString(), level, message }]);
+    });
     client.connect();
-    void Promise.allSettled([refreshStatus(), localApi.getAgents().then((next) => {
-      setAgents(next);
-      setSelectedAgentId((current) => current || next[0]?.id || "");
-    })]).finally(() => setInitializing(false));
-    const timer = window.setInterval(() => void refreshStatus(), 5000);
+    void refreshAgents().finally(() => setInitializing(false));
+    const timer = window.setInterval(() => void refreshAgents(), 5000);
     return () => {
       window.clearInterval(timer);
-      offConnection(); offAgents(); offLog(); client.close();
+      offConnection();
+      offLog();
+      client.close();
     };
-  }, [client, refreshStatus]);
+  }, [client, refreshAgents]);
 
-  const loadSessions = useCallback(async (agentId: string, preferred = "") => {
-    const generation = ++sessionLoadGeneration.current;
-    if (!agentId || !client.connected) {
-      setSessions([]); setSessionId(""); setMessages([]); setSessionsLoading(false);
-      return;
-    }
-    setSessionsLoading(true);
-    setWorkspaceError("");
-    try {
-      const next = await client.listSessions(agentId);
-      if (generation !== sessionLoadGeneration.current || selectedAgentIdRef.current !== agentId) return;
-      const unique = Array.from(new Map(next.map((session) => [session.id, session])).values());
-      setSessions(unique);
-      const nextId = unique.some((session) => session.id === preferred) ? preferred : unique[0]?.id || "";
-      setSessionId(nextId);
-    } catch (error) {
-      if (generation !== sessionLoadGeneration.current || selectedAgentIdRef.current !== agentId) return;
-      setSessions([]);
-      setSessionId("");
-      setWorkspaceError(errorMessage(error));
-    } finally {
-      if (generation === sessionLoadGeneration.current && selectedAgentIdRef.current === agentId) setSessionsLoading(false);
-    }
-  }, [client]);
-
-  useEffect(() => { void loadSessions(selectedAgentId); }, [selectedAgentId, wsConnected, loadSessions]);
+  // ── 副作用：同步 status ───────────────────────────────────────────────
 
   useEffect(() => {
-    streamGeneration.current += 1;
-    setSending(false);
-  }, [selectedAgentId]);
+    if (!wsConnected) return;
+    const id = window.setInterval(async () => {
+      try {
+        const next = await localApi.getStatus();
+        setStatus(next);
+        setInsecure(next.remote.paired && next.remote.serverUrl.startsWith("http://"));
+      } catch { /* 健康检查失败静默 */ }
+    }, 10000);
+    void localApi.getStatus().then(setStatus).catch(() => {});
+    return () => window.clearInterval(id);
+  }, [wsConnected]);
 
-  const loadMessages = useCallback(async (nextId: string) => {
-    const generation = ++messageLoadGeneration.current;
-    setMessages([]);
-    if (!nextId || !selectedAgentId) return;
-    setMessagesLoading(true);
-    setWorkspaceError("");
-    try {
-      const next = await client.getMessages(selectedAgentId, nextId);
-      if (generation === messageLoadGeneration.current) setMessages(next);
-    } catch (error) {
-      if (generation === messageLoadGeneration.current) setWorkspaceError(errorMessage(error));
-    } finally {
-      if (generation === messageLoadGeneration.current) setMessagesLoading(false);
-    }
-  }, [client, selectedAgentId]);
+  // ── 副作用：session 变化时加载消息 ────────────────────────────────────
 
   useEffect(() => {
-    sessionIdRef.current = sessionId;
-    if (skipMessageLoadForSession.current === sessionId) {
-      skipMessageLoadForSession.current = "";
-      setMessagesLoading(false);
-      return;
+    if (activeAgentId && sessionId) {
+      void messagesHook.load(activeAgentId, sessionId);
     }
-    if (sessionId) {
-      void loadMessages(sessionId);
-    } else {
-      messageLoadGeneration.current += 1;
-      setMessagesLoading(false);
-      setMessages([]);
-    }
-  }, [sessionId, loadMessages]);
+  }, [activeAgentId, sessionId]);
 
-  const createSession = async () => {
-    if (!selectedAgentId) return;
-    const agentId = selectedAgentId;
-    const generation = ++sessionLoadGeneration.current;
-    setSessionsLoading(true);
-    setWorkspaceError("");
+  // ── 事件处理器 ────────────────────────────────────────────────────────
+
+  const handleSelectAgent = useCallback((id: string) => {
+    if (id !== activeAgentId) {
+      messagesHook.clear();
+      setActiveAgent(id);
+    }
+  }, [activeAgentId, messagesHook, setActiveAgent]);
+
+  const handleCreateSession = useCallback(async (agentId: string, cwd: string, permissionMode: string) => {
     try {
-      const id = await client.createSession(agentId);
-      if (generation !== sessionLoadGeneration.current || selectedAgentIdRef.current !== agentId) return;
-      setSessions((current) => [{ id, agentId }, ...current.filter((session) => session.id !== id)]);
-      setSessionId(id);
-      setMessages([]);
-    } catch (error) {
-      if (generation === sessionLoadGeneration.current && selectedAgentIdRef.current === agentId) {
-        setWorkspaceError(`${t("session.createFailed")}: ${errorMessage(error)}`);
-      }
-    } finally {
-      if (generation === sessionLoadGeneration.current && selectedAgentIdRef.current === agentId) setSessionsLoading(false);
+      await createSession(agentId, cwd, permissionMode);
+      toast.success(t("session.created"));
+      setNewSessionDialogOpen(false);
+    } catch (err) {
+      toast.error(`${t("session.createFailed")}: ${errorMessage(err)}`);
     }
-  };
+  }, [createSession, t, toast]);
 
-  const loadExistingSession = async () => {
-    const nextSessionId = existingSessionId.trim();
-    if (!nextSessionId) {
-      setExistingSessionError(t("session.idRequired"));
-      return;
-    }
-    if (!selectedAgentId) return;
+  const handleSend = useCallback(async (text: string) => {
+    if (!activeAgentId || !sessionId) return;
+    await messagesHook.send(activeAgentId, sessionId, text);
+  }, [activeAgentId, sessionId, messagesHook]);
 
-    const agentId = selectedAgentId;
-    const generation = ++messageLoadGeneration.current;
-    setExistingSessionLoading(true);
-    setExistingSessionError("");
-    setWorkspaceError("");
+  const handlePermissionAllow = useCallback(async () => {
+    console.debug("[APP_DEBUG] handlePermissionAllow 被调用");
     try {
-      const nextMessages = await client.getMessages(agentId, nextSessionId);
-      if (generation !== messageLoadGeneration.current || selectedAgentIdRef.current !== agentId) return;
-      setSessions((current) => [
-        { id: nextSessionId, agentId, messageCount: nextMessages.length },
-        ...current.filter((session) => session.id !== nextSessionId),
-      ]);
-      if (sessionIdRef.current !== nextSessionId) {
-        skipMessageLoadForSession.current = nextSessionId;
-        sessionIdRef.current = nextSessionId;
-        setSessionId(nextSessionId);
-      }
-      setMessages(nextMessages);
-      setExistingSessionId("");
-      setDrawer(null);
-    } catch (error) {
-      if (generation === messageLoadGeneration.current && selectedAgentIdRef.current === agentId) {
-        setExistingSessionError(`${t("session.loadFailed")}: ${errorMessage(error)}`);
-      }
-    } finally {
-      if (generation === messageLoadGeneration.current && selectedAgentIdRef.current === agentId) setExistingSessionLoading(false);
+      await permissionHook.allow();
+      console.debug("[APP_DEBUG] handlePermissionAllow 完成，显示 success toast");
+      toast.success(t("permission.approved"));
+    } catch (e) {
+      console.error("[APP_DEBUG] handlePermissionAllow 异常:", e);
     }
-  };
+  }, [permissionHook, t, toast]);
 
-  const updateStreamingMessage = (assistantId: string, reasoningId: string, event: StreamEvent, generation: number, agentId: string) => {
-    if (generation !== streamGeneration.current || selectedAgentIdRef.current !== agentId) return;
-    if (event.type === "session.updated") {
-      if (event.sessionId && event.sessionId !== sessionIdRef.current) {
-        messageLoadGeneration.current += 1;
-        sessionIdRef.current = event.sessionId;
-        skipMessageLoadForSession.current = event.sessionId;
-        setSessionId(event.sessionId);
-        setSessions((current) => [{ id: event.sessionId, agentId }, ...current.filter((session) => session.id !== event.sessionId)]);
-      }
-      return;
-    }
-    setMessages((current) => {
-      if (event.type === "reasoning.delta") {
-        const exists = current.some((message) => message.id === reasoningId);
-        if (!exists) {
-          const index = current.findIndex((message) => message.id === assistantId);
-          const copy = [...current];
-          copy.splice(Math.max(0, index), 0, { id: reasoningId, role: "reasoning", content: [{ type: "text", text: event.text }] });
-          return copy;
-        }
-        return current.map((message) => message.id === reasoningId
-          ? { ...message, content: [{ type: "text", text: `${message.content[0]?.text || ""}${event.text}` }] }
-          : message);
-      }
-      if (event.type === "message.delta") {
-        return current.map((message) => message.id === assistantId
-          ? { ...message, pending: true, content: [{ type: "text", text: `${message.content[0]?.text || ""}${event.text}` }] }
-          : message);
-      }
-      if (event.type === "error") {
-        return current.map((message) => message.id === assistantId
-          ? { ...message, pending: false, error: true, content: [{ type: "text", text: event.message }] }
-          : message);
-      }
-      if (event.type === "done") return current.map((message) => message.id === assistantId ? { ...message, pending: false } : message);
-      return current;
-    });
-  };
-
-  const sendMessage = async (text: string) => {
-    if (!selectedAgentId || !sessionId) return;
-    const agentId = selectedAgentId;
-    const activeSessionId = sessionId;
-    const generation = ++streamGeneration.current;
-    const stamp = `${Date.now()}`;
-    const assistantId = `assistant-${stamp}`;
-    const reasoningId = `reasoning-${stamp}`;
-    setMessages((current) => [
-      ...current,
-      { id: `user-${stamp}`, role: "user", content: [{ type: "text", text }] },
-      { id: assistantId, role: "assistant", content: [{ type: "text", text: "" }], pending: true },
-    ]);
-    setSending(true);
-    setWorkspaceError("");
+  const handlePermissionDeny = useCallback(async () => {
+    console.debug("[APP_DEBUG] handlePermissionDeny 被调用");
     try {
-      await client.streamMessage(agentId, activeSessionId, text, (event) => updateStreamingMessage(assistantId, reasoningId, event, generation, agentId));
-    } catch (error) {
-      if (generation !== streamGeneration.current || selectedAgentIdRef.current !== agentId) return;
-      setMessages((current) => current.map((message) => message.id === assistantId
-        ? { ...message, pending: false, error: true, content: [{ type: "text", text: errorMessage(error) }] }
-        : message));
-      throw error;
-    } finally {
-      if (generation === streamGeneration.current && selectedAgentIdRef.current === agentId) setSending(false);
+      await permissionHook.deny();
+      console.debug("[APP_DEBUG] handlePermissionDeny 完成，显示 info toast");
+      toast.info(t("permission.denied"));
+    } catch (e) {
+      console.error("[APP_DEBUG] handlePermissionDeny 异常:", e);
     }
-  };
+  }, [permissionHook, t, toast]);
 
-  const performPair = async (replace: boolean) => {
-    setPairing(true); setPairError(""); setPairSuccess(false);
+  const handlePermissionAllowAlways = useCallback(async () => {
+    console.debug("[APP_DEBUG] handlePermissionAllowAlways 被调用");
+    try {
+      await permissionHook.allowAlways();
+      console.debug("[APP_DEBUG] handlePermissionAllowAlways 完成，显示 success toast");
+      toast.success(t("permission.allowAlways"));
+    } catch (e) {
+      console.error("[APP_DEBUG] handlePermissionAllowAlways 异常:", e);
+    }
+  }, [permissionHook, t, toast]);
+
+  // ── 远程配对 ──────────────────────────────────────────────────────────
+
+  const performPair = useCallback(async (replace: boolean) => {
+    setPairing(true);
+    setPairError("");
+    setPairSuccess(false);
     try {
       const next = await localApi.pair(serverUrl.trim(), pairingCode.trim(), replace);
-      setStatus((current) => ({ ...current, remote: next.remote }));
-      setPairingCode(""); setPairSuccess(true); setConfirmReplace(false);
-      await refreshStatus();
+      setStatus((prev) => ({ ...prev, remote: next.remote }));
+      setPairingCode("");
+      setPairSuccess(true);
+      setConfirmReplace(false);
+      void refreshAgents();
     } catch (error) {
-      const apiError = error as ApiError;
+      const apiError = error as { code?: string };
       if (apiError.code === "PAIRING_REPLACE_CONFIRMATION_REQUIRED") setConfirmReplace(true);
       else setPairError(errorMessage(error));
-    } finally { setPairing(false); }
-  };
+    } finally {
+      setPairing(false);
+    }
+  }, [serverUrl, pairingCode, refreshAgents]);
 
-  const submitPair = () => {
+  const submitPair = useCallback(() => {
     setPairError("");
     if (!/^https?:\/\//i.test(serverUrl.trim())) { setPairError(t("local.invalidServerAddress")); return; }
     if (!pairingCode.trim()) { setPairError(t("local.pairingCodeHint")); return; }
     if (status.remote.paired && status.remote.serverUrl && status.remote.serverUrl !== serverUrl.trim()) setConfirmReplace(true);
     else void performPair(false);
-  };
+  }, [serverUrl, pairingCode, status.remote, performPair, t]);
 
-  const unpair = async () => {
+  const unpair = useCallback(async () => {
     setUnpairing(true);
     try {
       await localApi.unpair();
-      setStatus((current) => ({ ...current, remote: { paired: false, connected: false, serverUrl: "" } }));
-      setServerUrl(""); setConfirmUnpair(false);
+      setStatus((prev) => ({ ...prev, remote: { paired: false, connected: false, serverUrl: "" } }));
+      setServerUrl("");
+      setConfirmUnpair(false);
     } catch (error) { setPairError(errorMessage(error)); }
     finally { setUnpairing(false); }
-  };
+  }, []);
 
-  const openLogs = async () => {
-    setDrawer("logs"); setMobileMenu(false);
+  // ── 抽屉打开 ──────────────────────────────────────────────────────────
+
+  const openDrawer = useCallback((name: DrawerName) => {
+    setDrawer(name);
+    setMobileMenu(false);
+  }, []);
+
+  const openSettings = useCallback(async () => {
+    openDrawer("settings");
+    setSettingsLoading(true);
+    setSettingsError("");
+    try {
+      const [settingsResult, storageResult] = await Promise.all([
+        localApi.getSettings(),
+        localApi.getStorageInfo().catch(() => null),
+      ]);
+      setSettings(settingsResult);
+      setStorageInfo(storageResult);
+    } catch (error) { setSettingsError(errorMessage(error)); }
+    finally { setSettingsLoading(false); }
+  }, [openDrawer]);
+
+  const saveSettings = useCallback(async () => {
+    setSettingsLoading(true);
+    setSettingsError("");
+    try { setSettings(await localApi.updateSettings(settings)); }
+    catch (error) { setSettingsError(errorMessage(error)); }
+    finally { setSettingsLoading(false); }
+  }, [settings]);
+
+  const openDiagnostics = useCallback(async () => {
+    openDrawer("diagnostics");
+    setDiagnosticsLoading(true);
+    setDiagnosticsError("");
+    try { setDiagnostics(await localApi.getDiagnostics()); }
+    catch (error) { setDiagnosticsError(errorMessage(error)); }
+    finally { setDiagnosticsLoading(false); }
+  }, [openDrawer]);
+
+  const openLogs = useCallback(async () => {
+    openDrawer("logs");
     try {
       const serverLogs = await localApi.getLogs();
       if (serverLogs.length) setLogs(serverLogs);
-    } catch (error) { setLogs((current) => [...current, { timestamp: new Date().toISOString(), level: "error", message: errorMessage(error) }]); }
-  };
+    } catch (error) {
+      setLogs((prev) => [...prev, { timestamp: new Date().toISOString(), level: "error", message: errorMessage(error) }]);
+    }
+  }, [openDrawer]);
 
-  const openSettings = async () => {
-    setDrawer("settings"); setMobileMenu(false); setSettingsLoading(true); setSettingsError("");
-    try { setLocalSettings(await localApi.getSettings()); }
-    catch (error) { setSettingsError(errorMessage(error)); }
-    finally { setSettingsLoading(false); }
-  };
+  const loadExistingSession = useCallback(async () => {
+    const nextSessionId = existingSessionId.trim();
+    if (!nextSessionId) { setExistingSessionError(t("session.idRequired")); return; }
+    if (!activeAgentId) return;
+    setExistingSessionLoading(true);
+    setExistingSessionError("");
+    try {
+      await loadSession(activeAgentId, nextSessionId);
+      setExistingSessionId("");
+      setDrawer(null);
+    } catch (error) { setExistingSessionError(`${t("session.loadFailed")}: ${errorMessage(error)}`); }
+    finally { setExistingSessionLoading(false); }
+  }, [existingSessionId, activeAgentId, loadSession, t]);
 
-  const saveSettings = async () => {
-    setSettingsLoading(true); setSettingsError("");
-    try { setLocalSettings(await localApi.updateSettings(localSettings)); }
-    catch (error) { setSettingsError(errorMessage(error)); }
-    finally { setSettingsLoading(false); }
-  };
+  // ── 初始加载 ──────────────────────────────────────────────────────────
 
   if (initializing) return <div className="page-loading"><Spinner /></div>;
 
   const serviceAvailable = wsConnected && status.healthy !== false;
-  const insecure = status.remote.paired && status.remote.serverUrl.startsWith("http://");
   const navigationLocked = sending;
-  const visibleWorkspaceError = workspaceError || statusError;
 
   return (
     <div className="app-shell">
-      {mobileMenu ? <button className="sidebar-backdrop" aria-label={t("common.close")} onClick={closeMobileMenu} tabIndex={-1} /> : null}
-      <aside id="app-navigation" ref={mobileSidebarRef} className={`sidebar ${mobileMenu ? "is-open" : ""}`} tabIndex={-1}>
-        <div className="sidebar__brand">
-          <div className="brand-mark"><Network size={17} aria-hidden="true" /></div>
-          <div className="sidebar__brand-copy"><strong>Agent-Bridge</strong><span>Local Console</span></div>
-        </div>
-        <section className="sidebar__section">
-          <div className="sidebar__section-title"><span>{t("agent.title")}</span><span>{agents.length}</span></div>
-          <div className="sidebar__list">
-            {agents.length ? agents.map((agent) => (
-              <button
-                className={`sidebar__item ${selectedAgentId === agent.id ? "is-active" : ""}`}
-                key={agent.id}
-                disabled={navigationLocked}
-                onClick={() => {
-                  if (agent.id !== selectedAgentId) {
-                    sessionLoadGeneration.current += 1;
-                    messageLoadGeneration.current += 1;
-                    setSessions([]); setSessionId(""); setMessages([]);
-                  }
-                  setSelectedAgentId(agent.id); closeMobileMenu();
-                }}
-              >
-                <span className="sidebar__item-icon"><Bot size={16} aria-hidden="true" /></span>
-                <span className="sidebar__item-copy"><strong>{agent.displayName}</strong><span><StatusDot status={connectionStatus(agent.status)} /><span className="sidebar__item-status-text">{t(`agent.${agent.status}`)}</span></span></span>
-              </button>
-            )) : <div className="sidebar__empty">{t("agent.emptyBody")}</div>}
-          </div>
-        </section>
-        <div className="sidebar__connection">
-          <StatusDot status={status.remote.connected ? "online" : status.remote.paired ? "busy" : "offline"} />
-          <div><strong>{status.remote.connected ? t("common.connected") : status.remote.state === "connecting" ? t("local.connecting") : status.remote.paired ? t("local.paired") : t("local.unpaired")}</strong><span>{status.remote.serverUrl || t("local.unpairedBody")}</span></div>
-        </div>
-        <nav className="sidebar__footer sidebar__footer--local">
-          <IconButton icon={Cable} label={t("local.remote")} active={drawer === "remote"} onClick={() => { setDrawer("remote"); setMobileMenu(false); }} />
-          <IconButton icon={ScrollText} label={t("local.logs")} active={drawer === "logs"} onClick={() => void openLogs()} />
-          <IconButton icon={Settings} label={t("common.settings")} active={drawer === "settings"} onClick={() => void openSettings()} />
-        </nav>
-      </aside>
+      <AgentSidebar
+        agents={agents}
+        activeAgentId={activeAgentId}
+        onSelectAgent={handleSelectAgent}
+        onStartAgent={startAgent}
+        onStopAgent={stopAgent}
+        pendingActions={pendingActions}
+        navigationLocked={navigationLocked}
+        remoteConnected={status.remote.connected}
+        remotePaired={status.remote.paired}
+        remoteState={status.remote.state}
+        remoteServerUrl={status.remote.serverUrl}
+        onOpenRemote={() => openDrawer("remote")}
+        onOpenDiagnostics={openDiagnostics}
+        onOpenLogs={openLogs}
+        onOpenSettings={openSettings}
+        mobileMenu={mobileMenu}
+        onCloseMobile={() => setMobileMenu(false)}
+      />
 
       <div className="shell-column" inert={mobileMenu ? true : undefined}>
         {insecure ? <div className="top-warning">{t("local.insecure")}</div> : null}
-        {visibleWorkspaceError ? <div className="top-warning top-warning--error">{visibleWorkspaceError}</div> : null}
         <Conversation
-          agent={selectedAgent}
+          agent={activeAgent}
           sessions={sessions}
           sessionId={sessionId}
-          onSelectSession={setSessionId}
-          onCreateSession={createSession}
-          onRefreshSessions={() => loadSessions(selectedAgentId, sessionId)}
-          onLoadSession={() => {
-            setExistingSessionId("");
-            setExistingSessionError("");
-            setDrawer("session");
-          }}
-          sessionsLoading={sessionsLoading}
+          onSelectSession={(id) => sessionsHook.setSessionId(id)}
+          onCreateSession={() => setNewSessionDialogOpen(true)}
+          onRefreshSessions={() => activeAgentId ? void sessionsHook.refresh(activeAgentId) : undefined}
+          onLoadSession={() => { setExistingSessionId(""); setExistingSessionError(""); openDrawer("session"); }}
+          sessionsLoading={sessionsLoading || messagesLoading}
           messages={messages}
           messagesLoading={messagesLoading}
           sending={sending}
           enabled={serviceAvailable}
           unavailableTitle={t("local.serviceOffline")}
           unavailableBody={t("local.serviceOfflineBody")}
-          onSend={sendMessage}
+          onSend={handleSend}
           onOpenMobileMenu={() => setMobileMenu(true)}
           mobileMenuOpen={mobileMenu}
         />
       </div>
 
+      {/* 抽屉：加载已有 Session */}
       <Drawer
         open={drawer === "session"}
         title={t("session.loadExisting")}
-        description={selectedAgent?.displayName}
+        description={activeAgent?.displayName}
         onClose={() => { if (!existingSessionLoading) setDrawer(null); }}
       >
         <div className="form-stack">
@@ -475,76 +405,199 @@ export function LocalApp() {
             />
             <span className="field__hint">{t("session.loadHint")}</span>
           </label>
-          <Button variant="primary" onClick={() => void loadExistingSession()} loading={existingSessionLoading}>{t("session.load")}</Button>
+          <Button variant="primary" onClick={() => void loadExistingSession()} loading={existingSessionLoading}>
+            {t("session.load")}
+          </Button>
         </div>
       </Drawer>
 
-      <Drawer open={drawer === "remote"} title={t("local.remote")} description={status.remote.paired ? status.remote.serverUrl : t("local.unpairedBody")} onClose={() => setDrawer(null)}>
+      {/* 抽屉：远程连接 */}
+      <Drawer
+        open={drawer === "remote"}
+        title={t("local.remote")}
+        description={status.remote.paired ? status.remote.serverUrl : t("local.unpairedBody")}
+        onClose={() => setDrawer(null)}
+      >
         <div className="form-stack">
           {status.remote.paired ? (
             <div className="data-list">
-              <div className="data-row"><div className="data-row__copy"><strong>{t("common.status")}</strong><span>{status.remote.connected ? t("common.connected") : status.remote.state === "connecting" ? t("local.connecting") : t("common.disconnected")}</span></div><StatusDot status={status.remote.connected ? "online" : status.remote.state === "connecting" ? "busy" : "offline"} /></div>
-              <div className="data-row"><div className="data-row__copy"><strong>{t("local.remoteServer")}</strong><span>{status.remote.serverUrl}</span></div></div>
-              {status.remote.deviceId ? <div className="data-row"><div className="data-row__copy"><strong>{t("local.deviceId")}</strong><span className="mono">{truncateMiddle(status.remote.deviceId, 34)}</span></div></div> : null}
+              <div className="data-row">
+                <div className="data-row__copy">
+                  <strong>{t("common.status")}</strong>
+                  <span>{status.remote.connected ? t("common.connected") : status.remote.state === "connecting" ? t("local.connecting") : t("common.disconnected")}</span>
+                </div>
+              </div>
+              <div className="data-row">
+                <div className="data-row__copy"><strong>{t("local.remoteServer")}</strong><span>{status.remote.serverUrl}</span></div>
+              </div>
+              {status.remote.deviceId ? (
+                <div className="data-row">
+                  <div className="data-row__copy"><strong>{t("local.deviceId")}</strong><span className="mono">{truncateMiddle(status.remote.deviceId, 34)}</span></div>
+                </div>
+              ) : null}
               {status.remote.lastError ? <Notice tone="error">{status.remote.lastError}</Notice> : null}
             </div>
           ) : <Notice>{t("local.unpairedBody")}</Notice>}
-          {(serverUrl || status.remote.serverUrl).startsWith("http://") ? <Notice tone="warning">{t("local.insecure")}</Notice> : null}
           {pairSuccess ? <Notice tone="success">{t("local.pairSuccess")}</Notice> : null}
           {pairError ? <Notice tone="error">{pairError}</Notice> : null}
-          <label className="field"><span className="field__label">{t("local.serverAddress")}</span><input value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder={t("local.serverAddressHint")} autoComplete="url" /></label>
-          <label className="field"><span className="field__label">{t("local.pairingCode")}</span><input className="mono" value={pairingCode} onChange={(event) => setPairingCode(event.target.value.toUpperCase())} placeholder={t("local.pairingCodeHint")} autoComplete="one-time-code" /></label>
-          <Button variant="primary" icon={Cable} onClick={submitPair} loading={pairing}>{pairing ? t("local.pairing") : t("local.pair")}</Button>
+          <label className="field">
+            <span className="field__label">{t("local.serverAddress")}</span>
+            <input value={serverUrl} onChange={(event) => setServerUrl(event.target.value)} placeholder={t("local.serverAddressHint")} autoComplete="url" />
+          </label>
+          <label className="field">
+            <span className="field__label">{t("local.pairingCode")}</span>
+            <input className="mono" value={pairingCode} onChange={(event) => setPairingCode(event.target.value.toUpperCase())} placeholder={t("local.pairingCodeHint")} autoComplete="one-time-code" />
+          </label>
+          <Button variant="primary" icon={Cable} onClick={submitPair} loading={pairing}>
+            {pairing ? t("local.pairing") : t("local.pair")}
+          </Button>
           {status.remote.paired ? <Button variant="ghost" icon={Unplug} onClick={() => setConfirmUnpair(true)}>{t("local.unpair")}</Button> : null}
         </div>
       </Drawer>
 
+      {/* 抽屉：日志 */}
       <Drawer open={drawer === "logs"} title={t("local.logs")} onClose={() => setDrawer(null)} wide>
-        {logs.length ? <div className="log-list">{logs.map((entry, index) => (
-          <div className={`log-entry log-entry--${entry.level}`} key={`${entry.timestamp}-${index}`}>
-            <time>{formatDate(entry.timestamp, locale)}</time><strong>{entry.level}</strong><span>{entry.message}</span>
+        {logs.length ? (
+          <div className="log-list">
+            {logs.map((entry, index) => (
+              <div className={`log-entry log-entry--${entry.level}`} key={`${entry.timestamp}-${index}`}>
+                <time>{formatDate(entry.timestamp, locale)}</time><strong>{entry.level}</strong><span>{entry.message}</span>
+              </div>
+            ))}
           </div>
-        ))}</div> : <EmptyState compact icon={ScrollText} title={t("local.logs")} body={t("local.logsEmpty")} />}
+        ) : (
+          <EmptyState compact icon={ScrollText} title={t("local.logs")} body={t("local.logsEmpty")} />
+        )}
       </Drawer>
 
+      {/* 抽屉：设置 */}
       <Drawer open={drawer === "settings"} title={t("local.settings")} onClose={() => setDrawer(null)}>
         <div className="form-stack">
           {settingsError ? <Notice tone="error">{settingsError}</Notice> : null}
-          {localSettings.restartRequired ? <Notice tone="success">{t("local.restartRequired")}</Notice> : null}
+          {settings.restartRequired ? <Notice tone="success">{t("local.restartRequired")}</Notice> : null}
           <LanguageControl />
           <label className="toggle-row">
             <span className="toggle-row__copy"><strong>{t("local.debug")}</strong><span>{t("local.debugBody")}</span></span>
-            <span className="toggle"><input type="checkbox" checked={localSettings.debug} onChange={(event) => setLocalSettings((current) => ({ ...current, debug: event.target.checked, restartRequired: false }))} /><span aria-hidden="true" /></span>
+            <span className="toggle">
+              <input type="checkbox" checked={settings.debug} onChange={(event) => setSettings((prev) => ({ ...prev, debug: event.target.checked, restartRequired: false }))} />
+              <span aria-hidden="true" />
+            </span>
           </label>
-          <label className="field"><span className="field__label">{t("local.claudeSettings")}</span><input value={localSettings.claudeSettingsFile} onChange={(event) => setLocalSettings((current) => ({ ...current, claudeSettingsFile: event.target.value, restartRequired: false }))} placeholder={t("local.claudeSettingsHint")} autoComplete="off" /></label>
+          <label className="field">
+            <span className="field__label">{t("local.claudeSettings")}</span>
+            <input value={settings.claudeSettingsFile} onChange={(event) => setSettings((prev) => ({ ...prev, claudeSettingsFile: event.target.value, restartRequired: false }))} placeholder={t("local.claudeSettingsHint")} autoComplete="off" />
+          </label>
           <Button variant="primary" onClick={() => void saveSettings()} loading={settingsLoading}>{t("common.save")}</Button>
           <div className="settings-list data-list">
             <div className="data-row"><div className="data-row__copy"><strong>{t("common.version")}</strong><span>{status.version}</span></div></div>
             <div className="data-row"><div className="data-row__copy"><strong>{t("local.listenAddress")}</strong><span className="mono">{status.localAddress}</span></div></div>
-            <div className="data-row"><div className="data-row__copy"><strong>{t("local.service")}</strong><span>{serviceAvailable ? t("common.online") : t("common.offline")}</span></div><StatusDot status={serviceAvailable ? "online" : "error"} /></div>
+            <div className="data-row"><div className="data-row__copy"><strong>{t("local.service")}</strong><span>{serviceAvailable ? t("common.online") : t("common.offline")}</span></div></div>
           </div>
+          {storageInfo ? (
+            <div className="settings-list data-list">
+              <div className="data-row"><div className="data-row__copy"><strong>{t("local.storage")}</strong><span>{storageInfo.store_dir}</span></div></div>
+              <div className="data-row"><div className="data-row__copy"><strong>{t("local.storageStats")}</strong><span>{t("local.storageStats", { sessions: storageInfo.total_sessions, messages: storageInfo.total_messages })}</span></div></div>
+            </div>
+          ) : null}
           {!serviceAvailable ? <Notice tone="error"><CircleAlert size={14} aria-hidden="true" /> {t("local.serviceOfflineBody")}</Notice> : null}
-          <Button variant="secondary" icon={RefreshCw} onClick={() => void refreshStatus()}>{t("common.refresh")}</Button>
+          <Button variant="secondary" icon={RefreshCw} onClick={() => void refreshAgents()}>{t("common.refresh")}</Button>
         </div>
       </Drawer>
 
-      <ConfirmDialog
-        open={confirmReplace}
-        title={t("local.replaceTitle")}
-        body={t("local.replaceBody")}
-        loading={pairing}
-        onCancel={() => setConfirmReplace(false)}
-        onConfirm={() => void performPair(true)}
+      {/* 抽屉：诊断 */}
+      <Drawer open={drawer === "diagnostics"} title={t("local.diagnostics")} description={t("local.diagnosticsBody")} onClose={() => setDrawer(null)} wide>
+        {diagnosticsLoading ? (
+          <div className="spinner-row spinner-row--centered"><LoaderCircle size={16} className="spin" /> {t("common.loading")}</div>
+        ) : diagnosticsError ? (
+          <Notice tone="error">{diagnosticsError}</Notice>
+        ) : diagnostics ? (
+          <div className="diagnostics-panel">
+            <section className="diagnostics-section">
+              <h3 className="diagnostics-section__title">{t("local.diagRuntime")}</h3>
+              <div className="diagnostics-grid">
+                {diagnostics.runtime.map((r) => (
+                  <div key={r.command} className={`diagnostics-card ${r.found ? "is-ok" : "is-fail"}`}>
+                    <div className="diagnostics-card__header">
+                      <span className={`status-badge ${r.found ? "status-badge--ok" : "status-badge--fail"}`}>{r.found ? <Check size={12} /> : <X size={12} />}</span>
+                      <strong>{r.name}</strong>
+                    </div>
+                    <div className="diagnostics-card__body">
+                      <span className="diagnostics-label">{t("local.diagVersion")}</span>
+                      <span className="diagnostics-value">{r.version || t("local.diagNotInstalled")}</span>
+                      {r.path ? <><span className="diagnostics-label">{t("local.diagPathValue")}</span><span className="diagnostics-value mono">{r.path}</span></> : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+            <section className="diagnostics-section">
+              <h3 className="diagnostics-section__title">{t("local.diagPath")}</h3>
+              <div className="data-list">
+                <div className="data-row"><div className="data-row__copy"><strong>{t("local.diagPathCount", { count: diagnostics.path.count })}</strong><span>{diagnostics.path.has_node_modules ? t("local.diagHasNodeModules") : ""}</span></div></div>
+              </div>
+            </section>
+            <section className="diagnostics-section">
+              <h3 className="diagnostics-section__title">{t("local.diagAgents")} ({diagnostics.agents.length})</h3>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead><tr><th>{t("local.diagAgent")}</th><th>{t("local.diagInstalled")}</th><th>{t("local.diagACP")}</th><th>{t("local.diagBridgeStatus")}</th><th>{t("local.diagConfigDirs")}</th><th>{t("local.diagEnvKeys")}</th></tr></thead>
+                  <tbody>
+                    {diagnostics.agents.map((agent) => (
+                      <tr key={agent.id}>
+                        <td><strong>{agent.display}</strong></td>
+                        <td><span className={`status-text ${agent.installed ? "status-text--success" : "status-text--error"}`}>{agent.installed ? <Check size={12} /> : <X size={12} />} {agent.installed ? t("local.diagFound") : t("local.diagNotFound")}</span></td>
+                        <td><span className={`status-text ${agent.acp_available ? "status-text--success" : (agent.installed ? "status-text--error" : "")}`}>{agent.acp_available ? <Check size={12} /> : agent.installed ? <X size={12} /> : <Minus size={12} />}</span></td>
+                        <td><span className={`status-text status-text--${agent.bridge_status === "idle" ? "success" : agent.bridge_status === "busy" ? "running" : agent.bridge_status === "error" ? "error" : ""}`}>{agent.bridge_status}</span></td>
+                        <td>{agent.config_dirs.map((dir, i) => <span key={i} className={`diag-dir-item ${dir.exists ? "diag-dir-item--ok" : "diag-dir-item--missing"}`}>{dir.exists ? <Check size={10} /> : <X size={10} />} {dir.path}</span>)}</td>
+                        <td>{agent.env_keys.map((env, i) => <span key={i} className={`diag-env-item ${env.set ? "diag-env-item--ok" : "diag-env-item--missing"}`}>{env.set ? <Check size={10} /> : <X size={10} />} {env.key}</span>)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+            {diagnostics.npm_global_agents.length > 0 ? (
+              <section className="diagnostics-section">
+                <h3 className="diagnostics-section__title">{t("local.diagNPMGlobal")}</h3>
+                <div className="table-wrap">
+                  <table className="data-table"><thead><tr><th>{t("common.name")}</th><th>{t("local.diagVersion")}</th></tr></thead>
+                    <tbody>{diagnostics.npm_global_agents.map((pkg) => <tr key={pkg.name}><td><strong>{pkg.name}</strong></td><td>{pkg.version}</td></tr>)}</tbody>
+                  </table>
+                </div>
+              </section>
+            ) : null}
+          </div>
+        ) : null}
+        <div className="form-actions form-actions--section">
+          <Button variant="secondary" icon={RefreshCw} onClick={() => void openDiagnostics()} loading={diagnosticsLoading}>{t("common.refresh")}</Button>
+        </div>
+      </Drawer>
+
+      {/* 确认对话框 */}
+      <ConfirmDialog open={confirmReplace} title={t("local.replaceTitle")} body={t("local.replaceBody")} loading={pairing} onCancel={() => setConfirmReplace(false)} onConfirm={() => void performPair(true)} />
+      <ConfirmDialog open={confirmUnpair} title={t("local.unpairTitle")} body={t("local.unpairBody")} confirmLabel={t("local.unpair")} danger loading={unpairing} onCancel={() => setConfirmUnpair(false)} onConfirm={() => void unpair()} />
+
+      {/* 新建会话弹窗 */}
+      <NewSessionDialog
+        open={newSessionDialogOpen}
+        onClose={() => setNewSessionDialogOpen(false)}
+        onCreate={handleCreateSession}
+        agents={agents.filter((a) => a.status === "idle" || a.status === "busy")}
+        defaultAgentId={activeAgentId ?? undefined}
+        defaultCWD=""
+        loading={sending}
       />
-      <ConfirmDialog
-        open={confirmUnpair}
-        title={t("local.unpairTitle")}
-        body={t("local.unpairBody")}
-        confirmLabel={t("local.unpair")}
-        danger
-        loading={unpairing}
-        onCancel={() => setConfirmUnpair(false)}
-        onConfirm={() => void unpair()}
+
+      {/* 权限请求弹窗 */}
+      <PermissionDialog
+        open={permissionHook.dialogOpen}
+        request={permissionHook.request}
+        history={permissionHook.history}
+        loading={permissionHook.loading}
+        onAllow={handlePermissionAllow}
+        onDeny={handlePermissionDeny}
+        onAllowAlways={handlePermissionAllowAlways}
+        onClose={() => permissionHook.close()}
       />
     </div>
   );

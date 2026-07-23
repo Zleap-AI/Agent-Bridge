@@ -108,7 +108,7 @@ func TestCreateSessionRecordsInvalidDeviceResponseAsFailure(t *testing.T) {
 	deviceGateway := &messageTestGateway{response: json.RawMessage(`{"unexpected":true}`)}
 	service := New(repository, deviceGateway)
 
-	if _, err := service.CreateSession(context.Background(), "device-1", "codex"); err == nil {
+	if _, err := service.CreateSession(context.Background(), "device-1", "codex", "", ""); err == nil {
 		t.Fatal("CreateSession accepted a response without sessionId")
 	}
 	if len(repository.records) != 1 || repository.records[0].Status != "failed" {
@@ -124,7 +124,7 @@ func TestUntrustedTargetIdentifiersAreNeverPersistedAsCallRecords(t *testing.T) 
 	const untrustedDeviceID = "CONVERSATION_BODY_MUST_NOT_PERSIST"
 
 	_, _ = service.Sessions(ctx, untrustedDeviceID, "codex")
-	_, _ = service.CreateSession(ctx, untrustedDeviceID, "codex")
+	_, _ = service.CreateSession(ctx, untrustedDeviceID, "codex", "", "")
 	_, _ = service.Messages(ctx, untrustedDeviceID, "codex", "session-1", 0, 100)
 	_, _ = service.SendMessage(ctx, untrustedDeviceID, "codex", "session-1", []ContentBlock{{Type: "text", Text: "hello"}})
 

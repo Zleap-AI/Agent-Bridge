@@ -328,3 +328,18 @@ export function ListLink({ icon: Icon, title, body, onClick }: { icon: LucideIco
     </button>
   );
 }
+
+// ─── 转发导出 ────────────────────────────────────────────────
+// 以下组件已拆分到独立文件，从统一入口转发以保持导入兼容性
+//
+// AuthorizationDialog 授权决策对话框
+// NewSessionDialog    新建会话对话框
+// DirBrowser         目录浏览器
+// DirEntry           目录条目类型
+// ──────────────────────────────────────────────────────────────
+export { AuthorizationDialog } from "./AuthorizationDialog";
+export type { AuthorizationDialogProps } from "./AuthorizationDialog";
+export { NewSessionDialog } from "./NewSessionDialog";
+export type { NewSessionDialogProps } from "./NewSessionDialog";
+export { DirBrowser } from "./DirBrowser";
+export type { DirBrowserProps, DirEntry } from "./DirBrowser";

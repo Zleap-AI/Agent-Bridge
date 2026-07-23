@@ -1,0 +1,14 @@
+[
+  {
+    "role": "user",
+    "text": "Reply with just 'OK'."
+  },
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_perm_allow_kimi.txt\" with content \"allow test\". Reply \"ok\"."
+  },
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_perm_auto_kimi.txt\" with content \"auto test\". Reply \"ok\"."
+  }
+]

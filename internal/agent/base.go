@@ -15,11 +15,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/Zleap-AI/Agent-Bridge/internal"
 	"github.com/Zleap-AI/Agent-Bridge/internal/infra"
 	"github.com/Zleap-AI/Agent-Bridge/internal/protocol"
 )
@@ -39,8 +40,33 @@ type baseAgent struct {
 
 	msgIDCounter int            // ACP 消息 ID 计数器
 	wsAdapter    *wsACPAdapter  // 可选：WebSocket ACP 适配器（macOS opencode 用）
-}
 
+	// permissionCB 权限请求回调。当 Agent 发送 session/request_permission
+	// 请求时，若此回调已设置，则使用回调处理（如转发给用户手动授权）；
+	// 否则自动批准（向后兼容）。
+	// 返回: (是否允许, 授权模式, 错误)
+	// 授权模式: "request_approval"（允许一次）/ "auto_approve"（始终允许）
+	// Lzm 2026-07-22
+	permissionCB func(params json.RawMessage) (bool, string, error)
+
+	// elicitationCB elicitation 请求回调。当 Agent 发送 session/create_elicitation
+	// 请求（请求用户输入：表单或 URL 弹窗）时，若此回调已设置，则使用回调处理
+	// （如转发给 SaaS 平台让用户填写表单）；否则自动取消。
+	// 返回: ACP 响应消息（需包含 action 和 content 字段），错误
+	// 参考：codex-acp CodexElicitationHandler.ts、claude-agent-acp elicitation.ts
+	// Lzm 2026-07-22
+	elicitationCB func(params json.RawMessage) (*protocol.ACPMessage, error)
+
+	// --- 自动重连 ---
+	// Lzm 2026-07-22
+
+	// stopped 标记 Stop() 已主动调用，watchRuntime 不应自动重启。
+	stopped atomic.Bool
+	// restartCount 连续重启次数，用于退避延迟计算。
+	restartCount atomic.Int32
+	// lastPrepare 保存最近一次 start() 的 prepare 函数，供重连时复用。
+	lastPrepare func() error
+}
 // agentRuntime owns every resource belonging to one child-process generation.
 // Keeping these values together prevents a late goroutine from a dead process
 // from closing or mutating the pipes of a newly restarted process.
@@ -57,8 +83,11 @@ type agentRuntime struct {
 
 	stderrBuf   bytes.Buffer
 	stderrBufMu sync.Mutex
-}
 
+	// capabilities 从 ACP initialize 握手响应中解析得到
+	// 仅在 doHandshake 完成后有效
+	capabilities CapabilityInfo
+}
 // newBaseAgent 创建 baseAgent 实例
 func newBaseAgent(meta AgentMeta) *baseAgent {
 	if meta.StartupTimeout <= 0 {
@@ -80,6 +109,31 @@ func (a *baseAgent) ID() string { return a.meta.ID }
 
 // DisplayName 返回显示名称
 func (a *baseAgent) DisplayName() string { return a.meta.DisplayName }
+
+// SetPermissionCallback 设置权限请求回调。
+// 当 Agent 发送 session/request_permission 请求时，Bridge 调用此回调
+// 让调用方决定如何处理（自动批准、转发给用户手动授权等）。
+// cb - 回调函数，接收 request_permission 的 params
+// 返回: (是否允许, 授权模式, 错误)
+// Lzm 2026-07-22
+func (a *baseAgent) SetPermissionCallback(cb func(params json.RawMessage) (bool, string, error)) {
+	a.permissionCB = cb
+}
+
+// SetElicitationCallback 设置 elicitation 请求回调。
+// 当 Agent 发送 session/create_elicitation 请求（请求用户输入）时，
+// Bridge 调用此回调让调用方处理（如转发给 SaaS 平台）。
+// cb - 回调函数，接收 create_elicitation 的 params
+// 返回: ACP 响应消息（应包含 action 和 content），错误
+// 参考：codex-acp CodexElicitationHandler.ts、claude-agent-acp elicitation.ts
+// Lzm 2026-07-22
+func (a *baseAgent) SetElicitationCallback(cb func(params json.RawMessage) (*protocol.ACPMessage, error)) {
+	a.elicitationCB = cb
+}
+
+// Priority 返回 Agent 优先级（值越小优先级越高）
+// Lzm 2026-07-20
+func (a *baseAgent) Priority() int { return a.meta.Priority }
 
 // Status 返回当前状态
 func (a *baseAgent) Status() AgentStatus {
@@ -107,10 +161,15 @@ func (a *baseAgent) nextID() string {
 
 // start 启动一个 Agent 子进程并完成握手。整个启动过程受同一把生命周期
 // 锁保护；并发 Start 会复用已经成功启动的进程，而不会再创建一个副本。
-// Lzm 2026-07-14
+// start 同时保存 prepare 供 watchRuntime 自动重连时复用。
+// Lzm 2026-07-22
 func (a *baseAgent) start(ctx context.Context, prepare func() error) error {
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
+
+	// 新启动尝试重置自动重连状态（允许 watchRuntime 在退出后重启）
+	a.stopped.Store(false)
+	a.lastPrepare = prepare
 
 	if err := ctx.Err(); err != nil {
 		return &AgentStartError{AgentID: a.meta.ID, Err: err}
@@ -153,12 +212,16 @@ func (a *baseAgent) start(ctx context.Context, prepare func() error) error {
 		)
 	} else {
 		// 标准 stdin/stdout 管道模式
+		// Codex 在 Windows Job Object 包装下无法正常初始化（PATH 别名创建失败），
+		// 因此对其禁用进程树管理。
+		useTree := !(a.meta.ID == "codex" && runtime.GOOS == "windows")
 		pm, err := infra.StartProcess(processCtx, infra.StartProcessConfig{
-			Command:  a.meta.Cmd,
-			Args:     a.meta.Args,
-			WorkDir:  a.meta.WorkDir,
-			Env:      a.meta.Env,
-			PathDirs: a.meta.PathDirs,
+			Command:        a.meta.Cmd,
+			Args:           a.meta.Args,
+			WorkDir:        a.meta.WorkDir,
+			Env:            a.meta.Env,
+			PathDirs:       a.meta.PathDirs,
+			UseProcessTree: useTree,
 		})
 		if err != nil {
 			processCancel()
@@ -193,6 +256,12 @@ func (a *baseAgent) start(ctx context.Context, prepare func() error) error {
 		a.waitForReaders(ctx, run)
 		return err
 	}
+
+	// 自动重连成功后重置重启计数器，避免无限递增导致退避时间过长。
+	// watchRuntime 检测到进程退出后使用 restartCount 计算退避延迟；
+	// 成功启动后归零确保下次退避从初始值开始。
+	// Lzm 2026-07-22
+	a.restartCount.Store(0)
 
 	a.setStatusForRuntime(run, AgentIdle)
 	return nil
@@ -259,17 +328,15 @@ func (a *baseAgent) startReadLoop(run *agentRuntime, readCtx context.Context) {
 				n, err := run.pm.StderrReader().Read(buf)
 				if n > 0 {
 					chunk := string(buf[:n])
-					// 写入环形缓冲区（最多保留 16KB）
+					// 写入环形缓冲区（最多保留 16KB），不主动输出到日志
+					// 需要排查具体 Agent 时可调 health/agents 接口查看 stderr_buf
+					// Lzm 2026-07-20
 					run.stderrBufMu.Lock()
 					if run.stderrBuf.Len() > 16*1024 {
 						run.stderrBuf.Reset()
 					}
 					run.stderrBuf.WriteString(chunk)
 					run.stderrBufMu.Unlock()
-					slog.Warn("Agent stderr",
-						"agent", a.meta.ID,
-						"output", chunk,
-					)
 				}
 				if err != nil {
 					return
@@ -284,18 +351,94 @@ func (a *baseAgent) startReadLoop(run *agentRuntime, readCtx context.Context) {
 	}()
 }
 
+// watchRuntime 等待 Agent 进程退出，必要时自动重连。
+// 退出后带指数退避自动重启，避免持续崩溃的 Agent 消耗 CPU。
+// Stop() 已设置 stopped 标记时不会重启。
+// Lzm 2026-07-22
 func (a *baseAgent) watchRuntime(run *agentRuntime) {
 	err := run.pm.Wait()
 	run.cancel()
 	a.clearRuntime(run)
+
 	if err != nil {
 		slog.Warn("Agent 进程已退出", "agent", a.meta.ID, "error", err)
 	} else {
 		slog.Info("Agent 进程已退出", "agent", a.meta.ID)
 	}
+
+	// Stop() 已主动关闭，不自动重连
+	if a.stopped.Load() {
+		slog.Info("Agent 已由 Stop 关闭，跳过自动重连",
+			"agent", a.meta.ID,
+		)
+		return
+	}
+
+	// 指数退避：1s, 2s, 4s, 8s, 16s, max 30s
+	attempt := a.restartCount.Add(1)
+	delay := time.Duration(1<<min(attempt-1, 5)) * time.Second
+	if delay > 30*time.Second {
+		delay = 30 * time.Second
+	}
+	slog.Info("Agent 即将自动重连",
+		"agent", a.meta.ID,
+		"delay", delay,
+		"attempt", attempt,
+	)
+	time.Sleep(delay)
+
+	// 重连前再次检查 stopped，以防等待期间 Stop() 被调用
+	if a.stopped.Load() {
+		slog.Info("重连等待期间 Stop() 已调用，取消重连",
+			"agent", a.meta.ID,
+		)
+		return
+	}
+
+	if err := a.start(context.Background(), a.lastPrepare); err != nil {
+		slog.Warn("Agent 自动重连失败",
+			"agent", a.meta.ID,
+			"error", err,
+			"attempt", attempt,
+		)
+		return
+	}
+	slog.Info("Agent 自动重连成功",
+		"agent", a.meta.ID,
+		"attempt", attempt,
+	)
 }
 
+// initializeResponseInfo 解析 ACP initialize 响应
+// 支持 agentInfo（V1 规范）和 serverInfo（旧格式）两种字段名
+// Lzm 2026-07-21
+type initializeResponseInfo struct {
+	ProtocolVersion  int                    `json:"protocolVersion"`
+	AgentCaps        *AgentCapabilitiesV1   `json:"agentCapabilities"`
+	LegacyCaps       map[string]interface{} `json:"capabilities"`
+	AuthMethods      []authMethodEntry      `json:"authMethods"`
+	ServerInfo       struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+		Title   string `json:"title,omitempty"`
+	} `json:"serverInfo"`
+	AgentInfo struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+		Title   string `json:"title,omitempty"`
+	} `json:"agentInfo,omitempty"`
+}
+
+type authMethodEntry struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+const supportedACPProtocolVersion = 1
+
 // doHandshake 执行 ACP initialize 握手
+// 包含：协议版本协商 → 能力解析 → 可选 authenticate
 // Lzm 2026-07-09
 func (a *baseAgent) doHandshake(ctx context.Context, run *agentRuntime) error {
 	req := protocol.NewInitializeRequest(a.nextID())
@@ -321,29 +464,106 @@ func (a *baseAgent) doHandshake(ctx context.Context, run *agentRuntime) error {
 				}
 				return fmt.Errorf("ACP 进程过早退出")
 			}
-			if msg.IsStreamUpdate() || msg.ID != req.ID {
+			if msg.IsStreamUpdate() || !msg.IDMatch(req.IDString()) {
 				slog.Debug("握手阶段收到非匹配消息",
 					"agent", a.meta.ID,
-					"expected_id", req.ID,
-					"got_id", msg.ID,
+					"expected_id", req.IDString(),
+					"got_id", msg.IDString(),
 				)
 				continue
 			}
 			if msg.IsSuccess() {
-				var info struct {
-					ProtocolVersion int                    `json:"protocolVersion"`
-					Capabilities    map[string]interface{} `json:"capabilities"`
-					ServerInfo      struct {
-						Name    string `json:"name"`
-						Version string `json:"version"`
-					} `json:"serverInfo"`
-				}
+				var info initializeResponseInfo
 				if err := json.Unmarshal(msg.Result, &info); err == nil {
+					// 版本协商：检查 Agent 返回的协议版本是否受支持
+					if info.ProtocolVersion > 0 && info.ProtocolVersion != supportedACPProtocolVersion {
+						slog.Warn("Agent 返回不同的 ACP 协议版本",
+							"agent", a.meta.ID,
+							"agent_version", info.ProtocolVersion,
+							"supported_version", supportedACPProtocolVersion,
+						)
+						// 仅记录警告，不阻断启动：所有 V1 Agent 实际都兼容低版本
+					}
+
+					// agentInfo（V1 规范）优先，降级到 serverInfo（旧格式）
+					agentName := info.ServerInfo.Name
+					agentVersion := info.ServerInfo.Version
+					agentTitle := info.ServerInfo.Title
+					if info.AgentInfo.Name != "" {
+						agentName = info.AgentInfo.Name
+						agentVersion = info.AgentInfo.Version
+						agentTitle = info.AgentInfo.Title
+					}
+
+					cap := CapabilityInfo{
+						Name:            agentName,
+						Version:         agentVersion,
+						Title:           agentTitle,
+						ProtocolVersion: info.ProtocolVersion,
+					}
+
+					// ACP V1 规范：优先解析 agentCapabilities 字段
+					if info.AgentCaps != nil {
+						cap.AgentCapabilities = info.AgentCaps
+						cap.SupportsStreaming = info.AgentCaps.Streaming
+						cap.SupportsSessions = info.AgentCaps.Sessions
+						cap.SupportsLoadSession = info.AgentCaps.LoadSession
+
+						if sc := info.AgentCaps.SessionCaps; sc != nil {
+							cap.SupportsResume = sc.SupportsResume()
+							cap.SupportsSessionDelete = sc.SupportsDelete()
+							cap.SupportsSessionClose = sc.SupportsClose()
+						}
+					}
+
+					// 兼容旧格式 Agent：从 legacy capabilities 读取
+					if info.LegacyCaps != nil {
+						cap.RawCapabilities = info.LegacyCaps
+						if !cap.SupportsStreaming {
+							if streaming, ok := info.LegacyCaps["streaming"].(bool); ok {
+								cap.SupportsStreaming = streaming
+							}
+						}
+						if !cap.SupportsSessions {
+							if sessions, ok := info.LegacyCaps["sessions"].(bool); ok {
+								cap.SupportsSessions = sessions
+							}
+						}
+						if !cap.SupportsLoadSession {
+							if loadSession, ok := info.LegacyCaps["loadSession"].(bool); ok {
+								cap.SupportsLoadSession = loadSession
+							}
+						}
+					}
+
+					// 处理认证：如果 Agent 声明了 authMethods，自动调用 authenticate
+					// Lzm 2026-07-21
+					if len(info.AuthMethods) > 0 {
+						slog.Info("Agent 需要认证，自动调用 authenticate",
+							"agent", a.meta.ID,
+							"method_count", len(info.AuthMethods),
+						)
+						if err := a.doAuthenticate(ctx, run, info.AuthMethods[0].ID); err != nil {
+							slog.Warn("Agent 认证失败，继续使用未认证状态",
+								"agent", a.meta.ID,
+								"error", err,
+							)
+							// 认证失败不阻断启动流程，后续 session 操作可能返回 auth_required
+						}
+					}
+
+					run.capabilities = cap
+
 					slog.Info("ACP 握手成功",
 						"agent", a.meta.ID,
-						"name", info.ServerInfo.Name,
-						"version", info.ServerInfo.Version,
-						"protocol", info.ProtocolVersion,
+						"name", cap.Name,
+						"version", cap.Version,
+						"protocol", cap.ProtocolVersion,
+						"streaming", cap.SupportsStreaming,
+						"sessions", cap.SupportsSessions,
+						"load_session", cap.SupportsLoadSession,
+						"resume", cap.SupportsResume,
+						"agent_caps_v1", info.AgentCaps != nil,
 					)
 				} else {
 					slog.Info("ACP 握手成功",
@@ -362,12 +582,14 @@ func (a *baseAgent) doHandshake(ctx context.Context, run *agentRuntime) error {
 		}
 	}
 }
-
 // Stop 终止 Agent 进程
-// Lzm 2026-07-10
+// 设置 stopped 标记，watchRuntime 检测到后不自动重启。
+// Lzm 2026-07-22
 func (a *baseAgent) Stop(ctx context.Context) error {
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
+
+	a.stopped.Store(true)
 
 	run := a.currentRuntime()
 	if run == nil {
@@ -390,6 +612,24 @@ func (a *baseAgent) Health(ctx context.Context) error {
 	}
 	return nil
 }
+
+// Capabilities 返回 Agent 的能力声明。
+// 优先从当前 runtime 的 ACP 握手结果中读取；若进程未运行或握手未完成，
+// 返回 AgentMeta 中预设的静态默认值。
+// Lzm 2026-07-20
+func (a *baseAgent) Capabilities() CapabilityInfo {
+	run := a.currentRuntime()
+	if run != nil {
+		// runtime 存在且已握手完成则返回收集到的能力
+		if run.capabilities.Name != "" || run.capabilities.ProtocolVersion != 0 {
+			return run.capabilities
+		}
+	}
+	// 兜底：返回静态默认值
+	return a.meta.Capabilities
+}
+
+// --- Runtime 管理 ---
 
 func (a *baseAgent) currentRuntime() *agentRuntime {
 	a.runtimeMu.RLock()
@@ -441,9 +681,7 @@ func (a *baseAgent) waitForReaders(ctx context.Context, run *agentRuntime) {
 		slog.Warn("Agent 后台协程退出超时", "agent", a.meta.ID)
 	}
 }
-
-// --- ACP 通信 ---
-
+// --- ACP 请求锁 ---
 func (a *baseAgent) acquireRequest(ctx context.Context) error {
 	select {
 	case a.requestGate <- struct{}{}:
@@ -472,371 +710,88 @@ func (a *baseAgent) resetReadTimer(timer *time.Timer) {
 	}
 	timer.Reset(a.meta.ReadTimeout)
 }
-
-// doSend 发送请求并等待完整响应（互斥访问 ACP 管道）
-// Lzm 2026-07-09
-func (a *baseAgent) doSend(ctx context.Context, req *protocol.ACPMessage) (*protocol.ACPMessage, error) {
-	if err := a.acquireRequest(ctx); err != nil {
-		return nil, err
-	}
-	defer a.releaseRequest()
-
-	run := a.currentRuntime()
-	if run == nil || !run.pm.IsRunning() {
-		return nil, fmt.Errorf("agent %s 进程未运行", a.meta.ID)
-	}
-
-	a.setStatusForRuntime(run, AgentBusy)
-	defer a.finishRequest(run)
-
-	// 发送请求
+// --- 认证管理 ---
+// doAuthenticate 调用 ACP authenticate 方法。
+// 在 initialize 握手后调用，处理需要认证的 Agent。
+// Lzm 2026-07-21
+func (a *baseAgent) doAuthenticate(ctx context.Context, run *agentRuntime, methodID string) error {
+	req := protocol.NewAuthenticateRequest(a.nextID(), methodID)
 	if err := run.writer.WriteMessage(req); err != nil {
-		a.invalidateRuntime(run)
-		return nil, fmt.Errorf("发送 ACP 消息失败: %w", err)
+		return fmt.Errorf("发送 authenticate 请求失败: %w", err)
 	}
 
-	readTimer := time.NewTimer(a.meta.ReadTimeout)
-	defer readTimer.Stop()
+	// 等待响应
+	authCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 
-	// 读取响应（跳过流式通知，直到找到匹配 ID 的响应）
 	for {
 		select {
 		case msg := <-run.readCh:
 			if msg == nil {
-				a.invalidateRuntime(run)
-				return nil, fmt.Errorf("ACP 进程过早退出")
+				return fmt.Errorf("Agent 进程过早退出（authenticate 阶段）")
 			}
-			a.resetReadTimer(readTimer)
-			// 跳过流式通知
-			if msg.IsStreamUpdate() {
+			if msg.IsStreamUpdate() || !msg.IDMatch(req.IDString()) {
 				continue
 			}
-			// 检查是否匹配请求 ID
-			if msg.ID == req.ID {
-				return msg, nil
+			if msg.IsSuccess() {
+				slog.Info("ACP authenticate 成功",
+					"agent", a.meta.ID,
+					"method_id", methodID,
+				)
+				return nil
 			}
-			// ID 不匹配，继续等待
-			slog.Debug("收到非匹配响应",
-				"expected_id", req.ID,
-				"got_id", msg.ID,
-			)
-			continue
-		case <-ctx.Done():
-			a.invalidateRuntime(run)
-			return nil, fmt.Errorf("等待 ACP 响应超时: %w", ctx.Err())
-		case <-readTimer.C:
-			a.invalidateRuntime(run)
-			return nil, fmt.Errorf("等待 ACP 响应超时: %s 内未收到消息", a.meta.ReadTimeout)
+			if msg.Error != nil {
+				return fmt.Errorf("authenticate 失败: code=%d message=%s",
+					msg.Error.Code, msg.Error.Message)
+			}
+		case <-authCtx.Done():
+			return fmt.Errorf("authenticate 超时: %w", authCtx.Err())
 		}
 	}
 }
-
-// doStream 发送请求并返回流式块通道
-// 调用方负责消耗通道直至关闭
-//
-// 序列化约束：ACP 是请求-响应式协议（共享 stdin/stdout），doStream
-// 在 Agent 返回终止消息前占用 requestGate。其他调用可以通过自己的
-// context 取消等待；输出通道使用背压保证响应文本不会静默丢失。
-//
-// Lzm 2026-07-10
-func (a *baseAgent) doStream(ctx context.Context, req *protocol.ACPMessage) (<-chan internal.StreamChunk, error) {
-	if err := a.acquireRequest(ctx); err != nil {
-		return nil, err
+// doLogout 调用 ACP logout 方法。
+// 仅在 Agent 声明了 agentCapabilities.auth.logout 时调用。
+// Lzm 2026-07-21
+func (a *baseAgent) doLogout(ctx context.Context, run *agentRuntime) error {
+	req := protocol.NewLogoutRequest(a.nextID())
+	if err := run.writer.WriteMessage(req); err != nil {
+		return fmt.Errorf("发送 logout 请求失败: %w", err)
 	}
 
+	logoutCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	for {
+		select {
+		case msg := <-run.readCh:
+			if msg == nil {
+				return fmt.Errorf("Agent 进程过早退出（logout 阶段）")
+			}
+			if msg.IsStreamUpdate() || !msg.IDMatch(req.IDString()) {
+				continue
+			}
+			if msg.IsSuccess() {
+				slog.Info("ACP logout 成功",
+					"agent", a.meta.ID,
+				)
+				return nil
+			}
+			if msg.Error != nil {
+				return fmt.Errorf("logout 失败: code=%d message=%s",
+					msg.Error.Code, msg.Error.Message)
+			}
+		case <-logoutCtx.Done():
+			return fmt.Errorf("logout 超时: %w", logoutCtx.Err())
+		}
+	}
+}
+// Logout 公开方法：调用 Agent 的 logout（可由 SaaS 通过 ANP 触发）。
+// 仅在 Agent 声明了 agentCapabilities.auth.logout 能力时可用。
+// Lzm 2026-07-21
+func (a *baseAgent) Logout(ctx context.Context) error {
 	run := a.currentRuntime()
 	if run == nil || !run.pm.IsRunning() {
-		a.releaseRequest()
-		return nil, fmt.Errorf("agent %s 进程未运行", a.meta.ID)
+		return fmt.Errorf("agent %s 进程未运行", a.meta.ID)
 	}
-
-	a.setStatusForRuntime(run, AgentBusy)
-
-	// 发送请求
-	if err := run.writer.WriteMessage(req); err != nil {
-		a.releaseRequest()
-		a.invalidateRuntime(run)
-		return nil, fmt.Errorf("发送 ACP 流式请求失败: %w", err)
-	}
-
-	// 创建流式块通道
-	chunkCh := make(chan internal.StreamChunk, 50)
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("流式读取协程 panic",
-					"agent", a.meta.ID,
-					"panic", r,
-				)
-			}
-		}()
-		defer a.releaseRequest()
-		defer a.finishRequest(run)
-		defer close(chunkCh)
-
-		readTimer := time.NewTimer(a.meta.ReadTimeout)
-		defer readTimer.Stop()
-
-		for {
-			select {
-			case msg := <-run.readCh:
-				if msg == nil {
-					// 进程退出
-					a.invalidateRuntime(run)
-					a.deliverTerminalChunk(chunkCh, internal.StreamChunk{
-						Type: internal.StreamChunkError,
-						Error: &internal.ACPError{
-							Code:    -1,
-							Message: "ACP 进程过早退出",
-						},
-					})
-					return
-				}
-				a.resetReadTimer(readTimer)
-
-				if msg.IsStreamUpdate() {
-					// 流式通知 → 解析为 StreamChunk
-					chunk, err := protocol.ParseStreamChunk(msg)
-					if err == nil && chunk != nil {
-						terminal := chunk.IsFinal || chunk.Type == internal.StreamChunkError
-						if !a.deliverStreamChunk(ctx, run, chunkCh, *chunk) {
-							a.invalidateRuntime(run)
-							return
-						}
-						// 流结束条件：final 或 error
-						if terminal {
-							return
-						}
-					} else if err != nil {
-						slog.Warn("解析流式块失败",
-							"agent", a.meta.ID,
-							"error", err,
-						)
-					} else {
-						// chunk == nil && err == nil：无法识别的格式
-						slog.Warn("忽略无法识别的流式通知",
-							"agent", a.meta.ID,
-							"raw", truncateString(string(msg.Params), 200),
-						)
-					}
-					continue
-				}
-
-				// 最终响应
-				if msg.ID == req.ID {
-					if msg.IsSuccess() {
-						if !a.deliverStreamChunk(ctx, run, chunkCh, finalStreamChunk(msg.Result)) {
-							a.invalidateRuntime(run)
-						}
-					} else if msg.Error != nil {
-						if !a.deliverStreamChunk(ctx, run, chunkCh, internal.StreamChunk{
-							Type:  internal.StreamChunkError,
-							Error: msg.Error,
-						}) {
-							a.invalidateRuntime(run)
-						}
-					}
-					return
-				}
-				// ID 不匹配，继续等待
-				slog.Debug("收到非匹配响应（流式模式）",
-					"expected_id", req.ID,
-					"got_id", msg.ID,
-				)
-				continue
-
-			case <-ctx.Done():
-				a.invalidateRuntime(run)
-				a.deliverTerminalChunk(chunkCh, internal.StreamChunk{
-					Type: internal.StreamChunkError,
-					Error: &internal.ACPError{
-						Code:    -2,
-						Message: fmt.Sprintf("请求取消: %v", ctx.Err()),
-					},
-				})
-				return
-			case <-readTimer.C:
-				a.deliverTerminalChunk(chunkCh, internal.StreamChunk{
-					Type: internal.StreamChunkError,
-					Error: &internal.ACPError{
-						Code:    -2,
-						Message: fmt.Sprintf("等待 ACP 流式响应超时: %s 内未收到消息", a.meta.ReadTimeout),
-					},
-				})
-				a.invalidateRuntime(run)
-				return
-			}
-		}
-	}()
-
-	return chunkCh, nil
-}
-
-// deliverStreamChunk applies backpressure without losing Agent output. The
-// caller's context or the current process generation ending can always release
-// the producer and therefore the request gate.
-func (a *baseAgent) deliverStreamChunk(ctx context.Context, run *agentRuntime, ch chan internal.StreamChunk, chunk internal.StreamChunk) bool {
-	select {
-	case ch <- chunk:
-		return true
-	case <-ctx.Done():
-		return false
-	case <-run.done:
-		return false
-	}
-}
-
-// deliverTerminalChunk is used after cancellation/process failure, when the
-// normal delivery select is no longer available. It never removes buffered
-// response data; an active consumer receives the explicit terminal error,
-// while an abandoned consumer cannot keep the runtime locked.
-func (a *baseAgent) deliverTerminalChunk(ch chan internal.StreamChunk, chunk internal.StreamChunk) {
-	select {
-	case ch <- chunk:
-	default:
-	}
-}
-
-func finalStreamChunk(result json.RawMessage) internal.StreamChunk {
-	chunk := internal.StreamChunk{
-		Type:   internal.StreamChunkFinal,
-		Result: result,
-	}
-	var payload struct {
-		Text string `json:"text"`
-	}
-	if err := json.Unmarshal(result, &payload); err == nil {
-		chunk.Text = payload.Text
-	}
-	return chunk
-}
-
-// --- 会话管理 ---
-
-// doNewSession 创建新 ACP 会话并返回 sessionId
-// Lzm 2026-07-10
-func (a *baseAgent) doNewSession(ctx context.Context) (string, error) {
-	req := protocol.NewSessionRequest(a.nextID(), a.meta.WorkDir)
-	resp, err := a.doSend(ctx, req)
-	if err != nil {
-		return "", &SessionError{Err: err}
-	}
-
-	if !resp.IsSuccess() {
-		if resp.Error != nil {
-			// 记录原始错误以便调试
-			slog.Warn("session/new 返回错误",
-				"agent", a.meta.ID,
-				"req_id", req.ID,
-				"code", resp.Error.Code,
-				"message", resp.Error.Message,
-			)
-			return "", &SessionError{
-				Err: fmt.Errorf("创建会话失败: code=%d message=%s",
-					resp.Error.Code, resp.Error.Message),
-			}
-		}
-		return "", &SessionError{Err: fmt.Errorf("创建会话返回异常响应")}
-	}
-
-	// 提取 sessionId
-	var result struct {
-		SessionID string `json:"sessionId"`
-	}
-	if err := json.Unmarshal(resp.Result, &result); err != nil {
-		// 无法解析 sessionId，记录原始内容
-		slog.Warn("解析 session/new 结果失败",
-			"agent", a.meta.ID,
-			"req_id", req.ID,
-			"raw_result", string(resp.Result),
-			"error", err,
-		)
-		return "", &SessionError{
-			Err: fmt.Errorf("解析 sessionId 失败: %w", err),
-		}
-	}
-	if result.SessionID == "" {
-		return "", &SessionError{Err: fmt.Errorf("sessionId 为空")}
-	}
-
-	return result.SessionID, nil
-}
-
-// LoadSessionStream loads a Session and exposes the replay notifications.
-// cwd and mcpServers stay here because they are Agent protocol details.
-func (a *baseAgent) LoadSessionStream(ctx context.Context, sessionID string) (<-chan internal.StreamChunk, error) {
-	params, _ := json.Marshal(map[string]interface{}{
-		"sessionId":  sessionID,
-		"cwd":        a.meta.WorkDir,
-		"mcpServers": []interface{}{},
-	})
-	req := &protocol.ACPMessage{
-		JSONRPC: "2.0",
-		ID:      a.nextID(),
-		Method:  "session/load",
-		Params:  params,
-	}
-
-	slog.Debug("doLoadSession: 发送 ACP session/load 请求",
-		"agent", a.meta.ID,
-		"session_id", sessionID,
-		"cwd", a.meta.WorkDir,
-		"request_id", req.ID,
-		"params", string(params),
-	)
-
-	ch, err := a.doStream(ctx, req)
-	if err != nil {
-		slog.Warn("doLoadSession: doStream 失败",
-			"agent", a.meta.ID,
-			"session_id", sessionID,
-			"error", err,
-		)
-		return nil, &SessionError{SessionID: sessionID, Err: err}
-	}
-	return ch, nil
-}
-
-// doLoadSession loads a Session while discarding replay notifications. Callers
-// that need the native history use LoadSessionStream instead.
-func (a *baseAgent) doLoadSession(ctx context.Context, sessionID string) error {
-	ch, err := a.LoadSessionStream(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-
-	for chunk := range ch {
-		if chunk.Type == internal.StreamChunkError {
-			slog.Warn("doLoadSession: Agent 返回错误",
-				"agent", a.meta.ID,
-				"session_id", sessionID,
-				"error_code", chunk.Error.Code,
-				"error_msg", chunk.Error.Message,
-			)
-			return &SessionError{
-				SessionID: sessionID,
-				Err:       fmt.Errorf("加载会话失败: %v", chunk.Error),
-			}
-		}
-		slog.Debug("doLoadSession: 收到流式块",
-			"agent", a.meta.ID,
-			"type", chunk.Type.String(),
-			"text_len", len(chunk.Text),
-		)
-	}
-	slog.Debug("doLoadSession: 会话加载成功",
-		"agent", a.meta.ID,
-		"session_id", sessionID,
-	)
-	return nil
-}
-
-// truncateString 截断字符串到指定长度（用于日志记录）
-// Lzm 2026-07-10
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
+	return a.doLogout(ctx, run)
 }

@@ -191,54 +191,59 @@ func setupAgentEnv(kind string) map[string]string {
 }
 
 // setupCodexEnv 配置 Codex 的 Windows 环境变量
-// 重定向 CODEX_HOME 到 %TEMP%/codex-home 解决 EPERM
-// Lzm 2026-07-11
+// 桥接器不管理 API Key — 用户通过 IDE 自行配置
+// API Key 仅通过环境变量透传（兼容 CLI 调用场景）
+// CODEX_HOME 使用用户默认 ~/.codex 目录（确保与会话一致性）
+//
+// Lzm 2026-07-22
 func setupCodexEnv() map[string]string {
 	env := make(map[string]string)
 
-	// 透传 API Key
-	if key := os.Getenv("ANTHROPIC_API_KEY"); key != "" {
-		env["ANTHROPIC_API_KEY"] = key
-	}
-	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
-		env["OPENAI_API_KEY"] = key
-	}
+	// --- API Key 透传（仅环境变量，不读取配置文件）---
+	setupCodexAPIKey(env)
 
-	// 创建临时 CODEX_HOME 目录
-	codexHome := filepath.Join(os.TempDir(), "codex-home")
-	if err := os.MkdirAll(codexHome, 0755); err != nil {
-		slog.Warn("创建 codex-home 失败，跳过重定向", "error", err)
-		return env
-	}
-
-	env["CODEX_HOME"] = codexHome
-
-	// 复制 ~/.codex/ 中的已有数据
-	home, _ := os.UserHomeDir()
-	srcCodex := filepath.Join(home, ".codex")
-	if info, err := os.Stat(srcCodex); err == nil && info.IsDir() {
-		if entries, err := os.ReadDir(srcCodex); err == nil {
-			for _, entry := range entries {
-				srcPath := filepath.Join(srcCodex, entry.Name())
-				dstPath := filepath.Join(codexHome, entry.Name())
-				if _, err := os.Stat(dstPath); os.IsNotExist(err) {
-					if entry.IsDir() {
-						if err := copyDir(srcPath, dstPath); err != nil {
-							slog.Warn("复制 Codex 目录失败",
-								"name", entry.Name(), "error", err)
-						}
-					} else {
-						if err := copyFile(srcPath, dstPath); err != nil {
-							slog.Warn("复制 Codex 文件失败",
-								"name", entry.Name(), "error", err)
-						}
-					}
-				}
-			}
-		}
-	}
+	// --- CODEX_HOME 路径 ---
+	setupCodexHomeDir(env)
 
 	return env
+}
+
+// setupCodexAPIKey 透传 Codex API Key（仅环境变量）
+// ACP 协议对接不需要 API Key（IDE 自己管理）
+// CLI 调用场景通过环境变量传入
+// Lzm 2026-07-22
+func setupCodexAPIKey(env map[string]string) {
+	// CODEX_API_KEY（Codex 专用环境变量）
+	if key := os.Getenv("CODEX_API_KEY"); key != "" {
+		env["CODEX_API_KEY"] = key
+		env["OPENAI_API_KEY"] = key
+		slog.Debug("Codex API Key 已从环境变量 CODEX_API_KEY 透传")
+		return
+	}
+
+	// OPENAI_API_KEY 通用环境变量
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		env["OPENAI_API_KEY"] = key
+		slog.Debug("Codex API Key 已从环境变量 OPENAI_API_KEY 透传")
+		return
+	}
+
+	// 无环境变量时，不阻塞启动 — ACP 场景由 IDE 管理 Key
+	slog.Debug("Codex API Key 未通过环境变量设置，ACP 场景由 IDE 管理")
+}
+
+// setupCodexHomeDir 设置 CODEX_HOME 为用户默认 ~/.codex 目录
+// 不重定向到临时目录，确保桥接器与会话一致性
+// Lzm 2026-07-22
+func setupCodexHomeDir(env map[string]string) {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		slog.Warn("无法获取用户主目录，跳过 CODEX_HOME 设置")
+		return
+	}
+	codexHome := filepath.Join(home, ".codex")
+	env["CODEX_HOME"] = codexHome
+	slog.Debug("CODEX_HOME 已设置为用户默认目录", "path", codexHome)
 }
 
 // setupKimiEnv 配置 Kimi 的 Windows 环境变量

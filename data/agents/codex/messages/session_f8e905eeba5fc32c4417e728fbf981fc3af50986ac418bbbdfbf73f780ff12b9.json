@@ -1,0 +1,10 @@
+[
+  {
+    "role": "user",
+    "text": "你的工作目录是哪里？"
+  },
+  {
+    "role": "assistant",
+    "text": "unexpected status 401 Unauthorized: {\"code\":\"INVALID_API_KEY\",\"message\":\"Invalid API key\"}, url: https://xuseny.online/responses, request id: 5a98ae15-6524-40d0-b10e-74a1d54b2075\n\n"
+  }
+]

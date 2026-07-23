@@ -188,7 +188,7 @@ func newHelperAgent(t *testing.T, mode string, readTimeout time.Duration, starts
 func testACPRequest(id string) *protocol.ACPMessage {
 	return &protocol.ACPMessage{
 		JSONRPC: "2.0",
-		ID:      id,
+		ID:      protocol.MarshalStringID(id),
 		Method:  "session/prompt",
 		Params:  json.RawMessage(`{"sessionId":"test","prompt":[]}`),
 	}
@@ -253,7 +253,7 @@ func TestAgentProcessHelper(t *testing.T) {
 		case "silent":
 			continue
 		case "flood":
-			if req.ID == "flood" {
+			if req.IDString() == "flood" {
 				for i := 0; i < 300; i++ {
 					params, _ := json.Marshal(map[string]any{
 						"request_id": req.ID,
@@ -262,6 +262,79 @@ func TestAgentProcessHelper(t *testing.T) {
 					})
 					_ = encoder.Encode(protocol.ACPMessage{JSONRPC: "2.0", Method: "session/update", Params: params})
 				}
+			}
+		case "session-crud":
+			// 模拟 Codex 的会话管理
+			switch req.Method {
+			case "session/new":
+				result, _ := json.Marshal(map[string]string{"sessionId": "integ-sid-" + req.IDString()})
+				_ = encoder.Encode(protocol.ACPMessage{JSONRPC: "2.0", ID: req.ID, Result: result})
+			case "session/load":
+				result, _ := json.Marshal(map[string]bool{"ok": true})
+				_ = encoder.Encode(protocol.ACPMessage{JSONRPC: "2.0", ID: req.ID, Result: result})
+			case "session/close", "session/delete":
+				result, _ := json.Marshal(map[string]bool{"ok": true})
+				_ = encoder.Encode(protocol.ACPMessage{JSONRPC: "2.0", ID: req.ID, Result: result})
+			default:
+				_ = encoder.Encode(protocol.ACPMessage{JSONRPC: "2.0", ID: req.ID, Error: &internal.ACPError{Code: -32601, Message: "Method not found"}})
+			}
+			continue
+		case "perm-request":
+			// 模拟 Codex 权限请求流程：
+			// 1. 收到请求（session/prompt）
+			// 2. 发送 session/request_permission 到 Bridge
+			// 3. 读取 Bridge 的权限响应（allow/deny）
+			// 4. 发送原始请求的响应
+			permParams, _ := json.Marshal(map[string]any{
+				"sessionId": "perm-sid-001",
+				"toolCall":  map[string]string{"id": "tool-1", "name": "read_file"},
+				"options": []map[string]string{
+					{"kind": "allow_once", "optionId": "allow", "name": "Allow"},
+					{"kind": "deny", "optionId": "deny", "name": "Deny"},
+				},
+			})
+			_ = encoder.Encode(protocol.ACPMessage{
+				JSONRPC: "2.0",
+				ID:      json.RawMessage(`"perm-1"`),
+				Method:  "session/request_permission",
+				Params:  permParams,
+			})
+			// 读取 Bridge 的权限响应（allow/deny）
+			if scanner.Scan() {
+				// 忽略权限响应内容，Bridge 已处理
+			}
+			// 发送原始请求的最终响应
+			result, _ := json.Marshal(map[string]string{"text": "permission granted"})
+			_ = encoder.Encode(protocol.ACPMessage{JSONRPC: "2.0", ID: req.ID, Result: result})
+			continue
+		case "503-once":
+			// 首次非 initialize 请求返回 503，后续正常
+			if modeState := os.Getenv("AGENT_BRIDGE_503_OCCURRED"); modeState == "" {
+				os.Setenv("AGENT_BRIDGE_503_OCCURRED", "1")
+				_ = encoder.Encode(protocol.ACPMessage{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Error:   &internal.ACPError{Code: -32000, Message: "503 Service Unavailable: Upstream API unavailable"},
+				})
+				continue
+			}
+		case "stream-simple":
+			// 流式响应测试：先发 5 个流式块，再发 final
+			if req.Method == "session/prompt" || req.IDString() == "stream-prompt" {
+				for i := 0; i < 5; i++ {
+					params, _ := json.Marshal(map[string]any{
+						"request_id": req.ID,
+						"type":       "response",
+						"content":    map[string]string{"text": fmt.Sprintf("chunk-%d ", i+1)},
+					})
+					_ = encoder.Encode(protocol.ACPMessage{JSONRPC: "2.0", Method: "session/update", Params: params})
+				}
+				result, _ := json.Marshal(map[string]string{
+					"text":       "chunk-1 chunk-2 chunk-3 chunk-4 chunk-5 ",
+					"stopReason": "end_turn",
+				})
+				_ = encoder.Encode(protocol.ACPMessage{JSONRPC: "2.0", ID: req.ID, Result: result})
+				continue
 			}
 		}
 

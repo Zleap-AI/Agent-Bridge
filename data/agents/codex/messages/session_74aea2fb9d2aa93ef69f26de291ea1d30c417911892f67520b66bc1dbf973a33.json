@@ -1,0 +1,10 @@
+[
+  {
+    "role": "user",
+    "text": "ChatGPT的会话存储和Codex的会话存储有什么区别？"
+  },
+  {
+    "role": "assistant",
+    "text": "stream disconnected before completion: error sending request for url (http://127.0.0.1:15721/v1/responses)\n\n"
+  }
+]

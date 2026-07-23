@@ -1,0 +1,10 @@
+[
+  {
+    "role": "user",
+    "text": "你的工作目录是什么"
+  },
+  {
+    "role": "assistant",
+    "text": "Failed to authenticate. API Error: 401 Daily Quota reached maximum limit, for details please view 302.AI"
+  }
+]

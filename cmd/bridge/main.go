@@ -86,6 +86,7 @@ func main() {
 	// first bridge/register message, while keeping Local fully usable offline.
 	time.Sleep(2 * time.Second)
 
+	slog.Info("数据存储目录", "path", service.GetAgentBridgeStoreDir())
 	sessions := service.NewSessionManager(registry)
 	tunnels := newTunnelManager(registry, sessions)
 	if cfg.HasRemoteConnection() {

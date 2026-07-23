@@ -1,0 +1,9 @@
+{
+  "agent_id": "claude-code",
+  "session_id": "deb65675-3d73-4014-94ce-ee1b37dfcade",
+  "title": "你当前的工作目录",
+  "cwd": "D:/project/A",
+  "permission_mode": "auto_approve",
+  "created_at": "2026-07-23T11:20:40.5693204+08:00",
+  "updated_at": "2026-07-23T11:26:26.6904084+08:00"
+}

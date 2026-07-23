@@ -1,0 +1,6 @@
+[
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_kimi_defperm.txt\" with content \"default perm test\"."
+  }
+]

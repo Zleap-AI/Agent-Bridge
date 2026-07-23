@@ -1,0 +1,10 @@
+[
+  {
+    "role": "user",
+    "text": "test message帮我创建一个文件 test.txt，内容写上 'hello world from codex'帮我创建一个文件 test.txt，内容写上 'hello world from codex'"
+  },
+  {
+    "role": "assistant",
+    "text": "我会在当前目录 `C:\\Users\\PC` 创建 `test.txt`，并写入指定内容。文件写入操作仍在完成中，我会随后核对文件内容。"
+  }
+]

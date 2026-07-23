@@ -1,18 +1,20 @@
+// -*- coding: utf-8 -*-
+// Go 1.25+
+//
+// local_http.go
+// Local HTTP 服务：路由注册、状态查询、Agent 管理、WebSocket、配对管理
+//
+// Lzm 2026-07-22
+
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -98,6 +100,11 @@ func newLocalHandler(app *localApplication, console http.Handler) http.Handler {
 	mux.HandleFunc("/api/v1/local/pairing", app.handleLocalUnpair)
 	mux.HandleFunc("/api/v1/local/logs", app.handleLocalLogs)
 	mux.HandleFunc("/api/v1/local/settings", app.handleLocalSettings)
+	mux.HandleFunc("/api/v1/local/storage", app.handleLocalStorage)
+	mux.HandleFunc("/api/v1/local/diagnostics", app.handleDiagnostics)
+	mux.HandleFunc("/api/v1/local/agents/", app.handleAgentCapabilities)
+	mux.HandleFunc("/api/v1/local/browse/drives", app.handleBrowseDrives)
+	mux.HandleFunc("/api/v1/local/browse", app.handleBrowse)
 	mux.HandleFunc("/ws/admin", app.handleAdminWebSocket)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/ws/") {
@@ -136,6 +143,82 @@ func (app *localApplication) handleAgents(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, app.registry.ListDescriptors())
+}
+
+// handleAgentCapabilities 处理 Agent 能力查询和启停请求。
+// GET  /api/v1/local/agents/capabilities     — 返回所有 Agent 的能力
+// GET  /api/v1/local/agents/{id}/capabilities — 返回指定 Agent 的能力
+// POST /api/v1/local/agents/{id}/start        — 启动指定 Agent
+// POST /api/v1/local/agents/{id}/stop         — 停止指定 Agent
+// Lzm 2026-07-20
+func (app *localApplication) handleAgentCapabilities(w http.ResponseWriter, r *http.Request) {
+	// 从路径中提取 agent ID 和动作，格式: /api/v1/local/agents/{id}/{action}
+	// 前缀已在注册时匹配（/api/v1/local/agents/），剩余部分如 "claude-code/capabilities"
+	remaining := strings.TrimPrefix(r.URL.Path, "/api/v1/local/agents/")
+	remaining = strings.TrimSuffix(remaining, "/")
+	parts := strings.SplitN(remaining, "/", 2)
+
+	if len(parts) < 2 {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_PATH", "路径格式应为 /api/v1/local/agents/{id}/{action}")
+		return
+	}
+
+	id := strings.TrimSpace(parts[0])
+	action := parts[1]
+
+	// 未指定 ID 时，有些操作可以针对所有 Agent
+	if id == "" {
+		if action == "capabilities" {
+			if !allowMethod(w, r, http.MethodGet) {
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"agents": app.registry.ListCapabilities(),
+			})
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, "INVALID_PATH", "路径格式应为 /api/v1/local/agents/{id}/{action}")
+		return
+	}
+
+	switch action {
+	case "capabilities":
+		// GET /api/v1/local/agents/{id}/capabilities — 查询指定 Agent 的能力
+		if !allowMethod(w, r, http.MethodGet) {
+			return
+		}
+		cap, err := app.registry.GetCapabilities(id)
+		if err != nil {
+			writeAPIError(w, http.StatusNotFound, "AGENT_NOT_FOUND", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, cap)
+
+	case "start":
+		// POST /api/v1/local/agents/{id}/start — 启动指定 Agent
+		if !allowMethod(w, r, http.MethodPost) || !requireLocalOrigin(w, r) {
+			return
+		}
+		if err := app.registry.Connect(r.Context(), id); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "AGENT_START_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "agent_id": id})
+
+	case "stop":
+		// POST /api/v1/local/agents/{id}/stop — 停止指定 Agent
+		if !allowMethod(w, r, http.MethodPost) || !requireLocalOrigin(w, r) {
+			return
+		}
+		if err := app.registry.Disconnect(r.Context(), id); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "AGENT_STOP_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "agent_id": id})
+
+	default:
+		writeAPIError(w, http.StatusBadRequest, "INVALID_ACTION", "不支持的操作: "+action)
+	}
 }
 
 func (app *localApplication) handleLocalStatus(w http.ResponseWriter, r *http.Request) {
@@ -423,6 +506,17 @@ func (app *localApplication) handleLegacyMessages(w http.ResponseWriter, r *http
 	})
 }
 
+// handleLocalStorage 获取存储状态统计信息
+// GET /api/v1/local/storage
+// Lzm 2026-07-20
+func (app *localApplication) handleLocalStorage(w http.ResponseWriter, r *http.Request) {
+	if !allowMethod(w, r, http.MethodGet) {
+		return
+	}
+	info := app.sessions.GetStorageInfo()
+	writeJSON(w, http.StatusOK, info)
+}
+
 func (app *localApplication) handleAdminWebSocket(w http.ResponseWriter, r *http.Request) {
 	wsServer := infra.NewWSServer()
 	conn, err := wsServer.Upgrade(w, r)
@@ -436,9 +530,17 @@ func (app *localApplication) handleAdminWebSocket(w http.ResponseWriter, r *http
 	write := func(value any) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
+		// 调试日志：记录 WebSocket 响应内容
+		if data, err := json.Marshal(value); err == nil {
+			slog.Debug("WebSocket 发送响应",
+				"data", truncateString(string(data), 300),
+			)
+		}
 		return infra.WriteJSON(conn, value)
 	}
 	router := service.NewRequestRouter(app.registry)
+	router.SetupPermissionCallbacks(app.sessions)
+	router.LocalMode = true
 	router.SetStreamCallback(func(requestID, chunkType, text string) error {
 		return write(protocol.NewStreamUpdate(requestID, chunkType, text))
 	})
@@ -473,9 +575,18 @@ func (app *localApplication) handleAdminWebSocket(w http.ResponseWriter, r *http
 		}
 		var message protocol.ANPMessage
 		if err := json.Unmarshal(data, &message); err != nil {
+			slog.Warn("WebSocket 消息 JSON 解析失败",
+				"raw", truncateString(string(data), 200),
+				"error", err,
+			)
 			_ = write(protocol.NewErrorResponse("", -32700, "消息不是有效的 JSON-RPC"))
 			continue
 		}
+		slog.Debug("WebSocket 收到消息",
+			"method", message.Method,
+			"id", message.ID,
+			"params", truncateString(string(message.Params), 200),
+		)
 		switch message.Method {
 		case "admin/agents", "bridge/health":
 			result, _ := json.Marshal(app.registry.ListDescriptors())
@@ -486,158 +597,14 @@ func (app *localApplication) handleAdminWebSocket(w http.ResponseWriter, r *http
 			}}})
 			_ = write(protocol.NewResultResponse(message.ID, result))
 		default:
-			response := router.Route(ctx, &message, app.sessions)
-			if response != nil {
-				_ = write(response)
-			}
+			// 在 goroutine 中处理路由，避免 blockingPrompt 阻塞消息读取循环
+			// 否则 session/cancel 等控制消息无法被读取和处理
+			go func() {
+				response := router.Route(ctx, &message, app.sessions)
+				if response != nil {
+					_ = write(response)
+				}
+			}()
 		}
-	}
-}
-
-func localListenAddress(host string, port int) string {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		host = defaultLocalHost
-	}
-	return net.JoinHostPort(host, fmt.Sprintf("%d", port))
-}
-
-// isAllowedLocalHost prevents a public hostname that resolves to loopback from
-// turning the browser's same-origin policy into access to the Local Console.
-func isAllowedLocalHost(listenAddress, requestHost string) bool {
-	listenHost, listenPort, err := net.SplitHostPort(listenAddress)
-	if err != nil {
-		return false
-	}
-	requestName, requestPort, err := net.SplitHostPort(requestHost)
-	if err != nil || requestPort != listenPort {
-		return false
-	}
-	listenHost = strings.Trim(strings.TrimSpace(listenHost), "[]")
-	requestName = strings.Trim(strings.TrimSpace(requestName), "[]")
-	if requestName == "" {
-		return false
-	}
-
-	listenIP := net.ParseIP(listenHost)
-	requestIP := net.ParseIP(requestName)
-	if listenIP != nil && listenIP.IsUnspecified() {
-		return requestIP != nil || strings.EqualFold(requestName, "localhost")
-	}
-	if isLoopbackAddress(listenHost) {
-		return isLoopbackAddress(requestName)
-	}
-	if listenIP != nil {
-		return requestIP != nil && listenIP.Equal(requestIP)
-	}
-	return strings.EqualFold(listenHost, requestName)
-}
-
-func isLoopbackAddress(host string) bool {
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-func requireLocalOrigin(w http.ResponseWriter, r *http.Request) bool {
-	if infra.IsAllowedLocalOrigin(r) {
-		return true
-	}
-	writeAPIError(w, http.StatusForbidden, "FORBIDDEN_ORIGIN", "请求来源不允许访问 Local Console")
-	return false
-}
-
-func allowMethod(w http.ResponseWriter, r *http.Request, method string) bool {
-	if r.Method == method {
-		return true
-	}
-	w.Header().Set("Allow", method)
-	writeAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "不支持的请求方法")
-	return false
-}
-
-func decodeJSONRequest(r *http.Request, value any) error {
-	if mediaType := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0])); mediaType != "application/json" {
-		return fmt.Errorf("Content-Type 必须是 application/json")
-	}
-	if r.ContentLength > maxLocalBodySize {
-		return fmt.Errorf("请求正文不能超过 %d 字节", maxLocalBodySize)
-	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxLocalBodySize+1))
-	if err != nil {
-		return fmt.Errorf("读取请求正文失败: %w", err)
-	}
-	if len(body) > maxLocalBodySize {
-		return fmt.Errorf("请求正文不能超过 %d 字节", maxLocalBodySize)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		return fmt.Errorf("请求 JSON 无效: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("请求只能包含一个 JSON 对象")
-	}
-	return nil
-}
-
-func writeAPIError(w http.ResponseWriter, status int, code, message string) {
-	writeJSON(w, status, apiErrorResponse{Error: apiError{Code: code, Message: message}})
-}
-
-func writeJSON(w http.ResponseWriter, status int, value any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(value); err != nil {
-		slog.Debug("写入 JSON 响应失败", "error", err)
-	}
-}
-
-func readRecentLocalLogs() []localLog {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return []localLog{}
-	}
-	path := filepath.Join(home, infra.LogDir, time.Now().Format("2006-01-02")+".log")
-	file, err := os.Open(path)
-	if err != nil {
-		return []localLog{}
-	}
-	defer file.Close()
-
-	const limit = 200
-	logs := make([]localLog, 0, limit)
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		entry := parseLocalLog(scanner.Text())
-		if len(logs) == limit {
-			copy(logs, logs[1:])
-			logs[len(logs)-1] = entry
-		} else {
-			logs = append(logs, entry)
-		}
-	}
-	return logs
-}
-
-func parseLocalLog(line string) localLog {
-	var wire struct {
-		Time  string `json:"time"`
-		Level string `json:"level"`
-		Msg   string `json:"msg"`
-	}
-	if json.Unmarshal([]byte(line), &wire) == nil && wire.Msg != "" {
-		return localLog{Timestamp: wire.Time, Level: strings.ToLower(wire.Level), Message: wire.Msg}
-	}
-	return localLog{Message: line}
-}
-
-func shutdownHTTPServer(ctx context.Context, server *http.Server) {
-	if err := server.Shutdown(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		slog.Warn("关闭 Local HTTP 服务失败", "error", err)
 	}
 }

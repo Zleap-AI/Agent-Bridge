@@ -1,0 +1,14 @@
+[
+  {
+    "role": "user",
+    "text": "Reply with just 'OK'."
+  },
+  {
+    "role": "user",
+    "text": "Reply with just 'OK'."
+  },
+  {
+    "role": "user",
+    "text": "Create a file at \"D:\\project\\A\\bridge_debug_kimi.txt\" with content \"kimi debug test\". After creating, reply with \"FILE_CREATED: \u003cpath\u003e\"."
+  }
+]

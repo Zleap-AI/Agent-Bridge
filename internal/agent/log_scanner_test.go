@@ -8,14 +8,11 @@ import (
 
 func TestCodexScannerFindsNestedNativeSessionsFromUserHome(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	sessionsDir := filepath.Join(home, ".codex", "sessions")
 
 	wantID := "019f322b-6ad9-7b31-94a5-29ede7d2f87f"
 	path := filepath.Join(
-		home,
-		".codex",
-		"sessions",
+		sessionsDir,
 		"2026",
 		"07",
 		"05",
@@ -24,14 +21,13 @@ func TestCodexScannerFindsNestedNativeSessionsFromUserHome(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+	// 写入有效的 session_meta JSONL（CodexScanner 要求至少能解析 session_meta）
+	metaLine := `{"timestamp":"2026-07-05T12:05:34Z","type":"session_meta","payload":{"session_id":"` + wantID + `","id":"` + wantID + `","timestamp":"2026-07-05T12:05:34Z"}}` + "\n"
+	if err := os.WriteFile(path, []byte(metaLine), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	scanner := ScannerFromAgentID("codex")
-	if scanner == nil {
-		t.Fatal("ScannerFromAgentID(codex) returned nil")
-	}
+	scanner := NewCodexScanner(sessionsDir)
 	sessions, err := scanner.DiscoverSessions()
 	if err != nil {
 		t.Fatal(err)

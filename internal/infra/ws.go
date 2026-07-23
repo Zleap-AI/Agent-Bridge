@@ -5,13 +5,12 @@
 // WebSocket 客户端与服务端封装（基于 gorilla/websocket）
 // 用于远程服务与 Bridge 之间的长连接通信
 //
-// Lzm 2026-07-09
+// Lzm 2026-07-20
 
 package infra
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -27,32 +26,38 @@ import (
 const (
 	// wsWriteTimeout WebSocket 写入超时
 	wsWriteTimeout = 10 * time.Second
-	// wsReadTimeout WebSocket 读取超时（仅用于初始连接）
-	wsReadTimeout = 60 * time.Second
-	// wsPingInterval ping 发送间隔
-	wsPingInterval = 30 * time.Second
+	// wsDefaultReadTimeout WebSocket 默认读取超时
+	wsDefaultReadTimeout = 60 * time.Second
+	// wsDefaultPingInterval WebSocket 默认 ping 发送间隔
+	wsDefaultPingInterval = 30 * time.Second
 	// wsMaxMessageSize 最大消息大小 (1MB)
 	wsMaxMessageSize = 1 * 1024 * 1024
 )
 
 // WSClient WebSocket 客户端
 type WSClient struct {
-	conn      *websocket.Conn
-	url       string
-	header    http.Header
-	mu        sync.Mutex
-	startOnce sync.Once
-	closed    bool
-	onMessage func(data []byte)
-	onError   func(client *WSClient, err error)
+	conn         *websocket.Conn
+	url          string
+	header       http.Header
+	mu           sync.Mutex
+	startOnce    sync.Once
+	closed       bool
+	onMessage    func(data []byte)
+	onError      func(client *WSClient, err error)
+	pingInterval time.Duration
+	readTimeout  time.Duration
 }
 
 // WSClientConfig WebSocket 客户端配置
 type WSClientConfig struct {
-	URL       string
-	Header    http.Header
-	OnMessage func(data []byte)
-	OnError   func(client *WSClient, err error)
+	URL          string
+	Header       http.Header
+	OnMessage    func(data []byte)
+	OnError      func(client *WSClient, err error)
+	// PingInterval ping 发送间隔，默认 30s；macOS OpenCode 场景建议 15s
+	PingInterval time.Duration
+	// ReadTimeout 读取超时（无任何数据包括 pong 到达的超时），默认 60s
+	ReadTimeout time.Duration
 }
 
 // WebSocketHandshakeError preserves the HTTP response status returned when a
@@ -71,6 +76,7 @@ func (e *WebSocketHandshakeError) Error() string {
 func (e *WebSocketHandshakeError) Unwrap() error { return e.Err }
 
 // NewWSClient 创建并连接 WebSocket 客户端
+// Lzm 2026-07-20
 func NewWSClient(ctx context.Context, cfg WSClientConfig) (*WSClient, error) {
 	dialer := *websocket.DefaultDialer
 	conn, response, err := dialer.DialContext(ctx, cfg.URL, cfg.Header)
@@ -81,21 +87,41 @@ func NewWSClient(ctx context.Context, cfg WSClientConfig) (*WSClient, error) {
 		return nil, newWebSocketDialError(cfg.URL, response, err)
 	}
 
+	// 使用配置值或默认值
+	readTimeout := cfg.ReadTimeout
+	if readTimeout <= 0 {
+		readTimeout = wsDefaultReadTimeout
+	}
+	pingInterval := cfg.PingInterval
+	if pingInterval <= 0 {
+		pingInterval = wsDefaultPingInterval
+	}
+
 	conn.SetReadLimit(wsMaxMessageSize)
-	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
+
+	// 设置 Ping 处理器：收到服务端 Ping 时自动回复 Pong
+	conn.SetPingHandler(func(appData string) error {
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(wsWriteTimeout))
 	})
-	if err := conn.SetReadDeadline(time.Now().Add(wsReadTimeout)); err != nil {
+
+	// 设置 Pong 处理器：收到服务端 Pong 时延长读取截止时间
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(readTimeout))
+	})
+
+	if err := conn.SetReadDeadline(time.Now().Add(readTimeout)); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("设置 WebSocket 读取超时失败: %w", err)
 	}
 
 	client := &WSClient{
-		conn:      conn,
-		url:       cfg.URL,
-		header:    cfg.Header,
-		onMessage: cfg.OnMessage,
-		onError:   cfg.OnError,
+		conn:         conn,
+		url:          cfg.URL,
+		header:       cfg.Header,
+		onMessage:    cfg.OnMessage,
+		onError:      cfg.OnError,
+		pingInterval: pingInterval,
+		readTimeout:  readTimeout,
 	}
 
 	return client, nil
@@ -204,8 +230,9 @@ func (c *WSClient) isClosed() bool {
 }
 
 // pingLoop 定期发送 ping 保活
+// Lzm 2026-07-20
 func (c *WSClient) pingLoop(ctx context.Context) {
-	ticker := time.NewTicker(wsPingInterval)
+	ticker := time.NewTicker(c.pingInterval)
 	defer ticker.Stop()
 
 	for {
@@ -226,6 +253,14 @@ func (c *WSClient) pingLoop(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// IsConnected 检查 WebSocket 连接是否仍然有效
+// Lzm 2026-07-20
+func (c *WSClient) IsConnected() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !c.closed
 }
 
 // IsWebSocketClose reports whether err, including a wrapped error, carries the
@@ -328,15 +363,6 @@ func (s *WSServer) Upgrade(w http.ResponseWriter, r *http.Request) (*websocket.C
 	}
 	conn.SetReadLimit(wsMaxMessageSize)
 	return conn, nil
-}
-
-// ReadJSON 从 WebSocket 读取并解析 JSON 消息
-func ReadJSON(conn *websocket.Conn, v interface{}) error {
-	_, data, err := conn.ReadMessage()
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(data, v)
 }
 
 // WriteJSON 向 WebSocket 写入 JSON 消息

@@ -10,6 +10,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -139,28 +140,129 @@ var DefaultRetryConfig = RetryConfig{
 			strings.Contains(err.Error(), "503") ||
 			strings.Contains(err.Error(), "504") ||
 			// 也可以直接匹配 RetryableError 类型
-			errorsAs(err, &retryable)
+			errors.As(err, &retryable)
 	},
 }
 
-// errorsAs 检查 error 是否可以转换为目标类型
-func errorsAs(err error, target interface{}) bool {
-	if err == nil {
-		return false
+// --- 统一错误码系统 ---
+// 将各 Agent 的错误信息格式转换为统一的 SaaS 错误码
+// Lzm 2026-07-20
+
+// AgentErrorCode 表示 Agent 错误的统一分类编码
+type AgentErrorCode string
+
+const (
+	ErrCodeStartFailed       AgentErrorCode = "AGENT_START_FAILED"        // Agent 进程启动失败
+	ErrCodeAuthFailed        AgentErrorCode = "AGENT_AUTH_FAILED"         // API Key 认证失败
+	ErrCodeTimeout           AgentErrorCode = "AGENT_TIMEOUT"             // 请求超时
+	ErrCodeProcessExited     AgentErrorCode = "AGENT_PROCESS_EXITED"      // 进程意外退出
+	ErrCodeHandshakeFailed   AgentErrorCode = "AGENT_HANDSHAKE_FAILED"    // ACP 握手失败
+	ErrCodePermissionDenied  AgentErrorCode = "AGENT_PERMISSION_DENIED"   // 权限请求被拒绝 (Codex)
+	ErrCodeEPERM             AgentErrorCode = "AGENT_EPERM"               // Windows EPERM 错误
+	ErrCodeNotReady          AgentErrorCode = "AGENT_NOT_READY"           // Agent 未就绪（状态不对）
+	ErrCodeSessionNotFound   AgentErrorCode = "AGENT_SESSION_NOT_FOUND"  // 会话不存在
+)
+
+// AgentCodedError 携带统一错误码的 Agent 错误
+type AgentCodedError struct {
+	Code       AgentErrorCode
+	Message    string
+	WrappedErr error
+}
+
+func (e AgentCodedError) Error() string {
+	if e.WrappedErr != nil {
+		return fmt.Sprintf("[%s] %s: %v", e.Code, e.Message, e.WrappedErr)
 	}
-	// 简单实现：递归 Unwrap
-	for {
-		if fmt.Sprintf("%T", err) == fmt.Sprintf("%T", target) {
-			return true
+	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
+}
+
+func (e AgentCodedError) Unwrap() error {
+	return e.WrappedErr
+}
+
+// MapError 将任意错误映射为统一 AgentCodedError
+// 按类型优先匹配，再按错误文本关键词匹配
+// Lzm 2026-07-20
+func MapError(err error) AgentCodedError {
+	if err == nil {
+		return AgentCodedError{}
+	}
+
+	// --- 类型匹配 ---
+	var startErr *AgentStartError
+	if errors.As(err, &startErr) {
+		return AgentCodedError{
+			Code:       ErrCodeStartFailed,
+			Message:    startErr.Error(),
+			WrappedErr: err,
 		}
-		u, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
+	}
+
+	// --- 文本关键词匹配 ---
+	errStr := err.Error()
+	errLower := strings.ToLower(errStr)
+
+	switch {
+	case strings.Contains(errStr, "EPERM") || strings.Contains(errStr, "Access is denied") ||
+		strings.Contains(errLower, "permission"):
+		return AgentCodedError{
+			Code:       ErrCodeEPERM,
+			Message:    errStr,
+			WrappedErr: err,
 		}
-		err = u.Unwrap()
-		if err == nil {
-			return false
+
+	case strings.Contains(errLower, "timeout") || strings.Contains(errLower, "deadline"):
+		return AgentCodedError{
+			Code:       ErrCodeTimeout,
+			Message:    errStr,
+			WrappedErr: err,
 		}
+
+	case strings.Contains(errLower, "handshake") || strings.Contains(errLower, "initialize"):
+		return AgentCodedError{
+			Code:       ErrCodeHandshakeFailed,
+			Message:    errStr,
+			WrappedErr: err,
+		}
+
+	case strings.Contains(errStr, "API_KEY") || strings.Contains(errLower, "api_key") ||
+		strings.Contains(errLower, "auth") || strings.Contains(errLower, "login"):
+		return AgentCodedError{
+			Code:       ErrCodeAuthFailed,
+			Message:    errStr,
+			WrappedErr: err,
+		}
+
+	case strings.Contains(errLower, "session") && strings.Contains(errLower, "not found"):
+		return AgentCodedError{
+			Code:       ErrCodeSessionNotFound,
+			Message:    errStr,
+			WrappedErr: err,
+		}
+
+	case strings.Contains(errStr, "未就绪") || strings.Contains(errLower, "not ready") ||
+		strings.Contains(errLower, "disconnected"):
+		return AgentCodedError{
+			Code:       ErrCodeNotReady,
+			Message:    errStr,
+			WrappedErr: err,
+		}
+
+	case strings.Contains(errStr, "过早退出") || strings.Contains(errLower, "process exited") ||
+		strings.Contains(errLower, "进程退出"):
+		return AgentCodedError{
+			Code:       ErrCodeProcessExited,
+			Message:    errStr,
+			WrappedErr: err,
+		}
+	}
+
+	// 默认：保留原错误（Code 为空字符串）
+	return AgentCodedError{
+		Code:       "",
+		Message:    errStr,
+		WrappedErr: err,
 	}
 }
 

@@ -140,8 +140,11 @@ export const remoteApi = {
     })).filter((session) => session.id);
   },
 
-  async createSession(deviceId: string, agentId: string): Promise<SessionInfo> {
-    const raw = await requestJSON<RecordValue>(`${API}/devices/${pathPart(deviceId)}/agents/${pathPart(agentId)}/sessions`, { method: "POST" });
+  async createSession(deviceId: string, agentId: string, cwd?: string, permissionMode?: string): Promise<SessionInfo> {
+    const body: RecordValue = {};
+    if (cwd) body.cwd = cwd;
+    if (permissionMode) body.permission_mode = permissionMode;
+    const raw = await requestJSON<RecordValue>(`${API}/devices/${pathPart(deviceId)}/agents/${pathPart(agentId)}/sessions`, { method: "POST", body: JSON.stringify(body) });
     const session = (raw.session || raw) as RecordValue;
     const id = String(session.id || session.session_id || session.sessionId || "");
     if (!id) throw new ApiError("The server did not return a Session ID", 0, "INVALID_RESPONSE");
