@@ -1,9 +1,0 @@
-{
-  "agent_id": "claude-code",
-  "session_id": "bc0fa2e3-ea3a-4934-88ce-fe50bd1088f0",
-  "title": "Say hello in one sentence.",
-  "cwd": "D:\\project\\A",
-  "permission_mode": "auto_approve",
-  "created_at": "2026-07-22T15:16:55.7855691+08:00",
-  "updated_at": "2026-07-22T15:17:04.9230337+08:00"
-}

@@ -1,6 +1,0 @@
-[
-  {
-    "role": "user",
-    "text": "Create a file at \"D:\\project\\A\\zleap_auth_test_claude_code.txt\" with content \"Auth test from claude-code at 2026-07-22 17:06:31\". After creating the file, reply ONLY with \"FILE_CREATED: \u003cpath\u003e\" followed by a brief confirmation that includes the word \"permission\" or \"authorized\"."
-  }
-]

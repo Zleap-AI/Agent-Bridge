@@ -1,6 +1,0 @@
-[
-  {
-    "role": "user",
-    "text": "在 D:\\project\\A 目录下创建文件 \"test_deny.txt\"，内容为 \"This should not exist\""
-  }
-]
